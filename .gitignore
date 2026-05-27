@@ -1,0 +1,4 @@
+/target
+/fuzz/.idea/
+/.idea/
+/proptest-regressions/

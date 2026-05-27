@@ -1,0 +1,22 @@
+[package]
+name = "piece-tree-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1.3", features = ["derive"] }
+
+[dependencies.piece-tree]
+path = ".."
+
+[[bin]]
+name = "piece_tree"
+path = "fuzz_targets/piece_tree.rs"
+test = false
+doc = false
+bench = false

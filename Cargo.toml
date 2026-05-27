@@ -1,0 +1,35 @@
+[package]
+name = "piece-tree"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+write = []
+
+runtime-dispatch-simd = ["bytecount/runtime-dispatch-simd"]
+generic-simd = ["bytecount/generic-simd"]
+
+[dependencies]
+bytecount        = { version = "=0.6.9",   default-features = false }
+cranelift-entity = { version = "=0.132.0", default-features = false }
+smallvec         = { version = "=1.15.1",  default-features = false, features = ["const_generics"] }
+
+[dev-dependencies]
+proptest = "1.4"
+criterion = "0.5"
+rand = "0.8"
+
+[[bench]]
+name = "piece_tree_bench"
+harness = false
+
+[profile.release-fast]
+inherits = "release"
+opt-level = 3
+panic = "abort"
+codegen-units = 1
+lto = "fat"
+debug = false
+strip = true
+debug-assertions = false
+overflow-checks = false
