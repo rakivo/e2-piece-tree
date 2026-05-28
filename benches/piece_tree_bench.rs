@@ -120,7 +120,7 @@ fn bench_reads(c: &mut Criterion) {
 
     group.bench_function("to_string_allocating_fragmented", |b| {
         b.iter(|| {
-            black_box(tree.to_string_allocating())
+            black_box(tree.to_string())
         })
     });
 

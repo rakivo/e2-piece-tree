@@ -107,11 +107,11 @@ mod tests_char_api {
         assert!(compacted_node_count < bloated_node_count);
 
         // Ensure data integrity survived the re-indexing
-        assert_eq!(tree.to_string_allocating(), "A");
+        assert_eq!(tree.to_string(), "A");
 
         // Ensure the undo stack survived the re-indexing
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "AX"); // The last state before the final remove
+        assert_eq!(tree.to_string(), "AX"); // The last state before the final remove
     }
 
     #[test]
@@ -152,15 +152,15 @@ mod tests_char_api {
 
         // Use standard Rust exclusive range
         tree.remove(4..10);
-        assert_eq!(tree.to_string_allocating(), "The brown fox");
+        assert_eq!(tree.to_string(), "The brown fox");
 
         // Use standard Rust inclusive range
         tree.remove(4..=9);
-        assert_eq!(tree.to_string_allocating(), "The fox");
+        assert_eq!(tree.to_string(), "The fox");
 
         // Use standard Rust unbounded range (clear to end)
         tree.remove(3..);
-        assert_eq!(tree.to_string_allocating(), "The");
+        assert_eq!(tree.to_string(), "The");
     }
 
     #[test]
@@ -247,11 +247,11 @@ mod tests_fredbuf {
         let mut tree = PieceTree::new();
         tree.insert_no_commit(0, "ABCD");
         tree.insert(4, "a");
-        assert_eq!(tree.to_string_allocating(), "ABCDa");
+        assert_eq!(tree.to_string(), "ABCDa");
 
         // Delete across the boundary of the original piece and the appended piece
         tree.remove_at(3, 2);
-        assert_eq!(tree.to_string_allocating(), "ABC");
+        assert_eq!(tree.to_string(), "ABC");
     }
 
     #[test]
@@ -259,11 +259,11 @@ mod tests_fredbuf {
         let mut tree = PieceTree::new();
         // Insert into nothing
         tree.insert(0, "a");
-        assert_eq!(tree.to_string_allocating(), "a");
+        assert_eq!(tree.to_string(), "a");
 
         // Remove to nothing
         tree.remove_at(0, 1);
-        assert_eq!(tree.to_string_allocating(), "");
+        assert_eq!(tree.to_string(), "");
     }
 
     #[test]
@@ -273,13 +273,13 @@ mod tests_fredbuf {
 
         // SuppressHistory::Yes == insert_text_internal
         tree.insert_no_commit(0, "a");
-        assert_eq!(tree.to_string_allocating(), "aHello, World!");
+        assert_eq!(tree.to_string(), "aHello, World!");
 
         // Try undo should fail because internal edits don't record history
         assert!(tree.try_undo(0).is_none());
 
         tree.remove_no_commit(0, 1); // SuppressHistory::Yes
-        assert_eq!(tree.to_string_allocating(), "Hello, World!");
+        assert_eq!(tree.to_string(), "Hello, World!");
         assert!(tree.try_undo(0).is_none());
 
         // Snap back to "Hello, World!" by committing head
@@ -287,24 +287,24 @@ mod tests_fredbuf {
         tree.insert_no_commit(0, "a");
         tree.insert_no_commit(1, "b");
         tree.insert_no_commit(2, "c");
-        assert_eq!(tree.to_string_allocating(), "abcHello, World!");
+        assert_eq!(tree.to_string(), "abcHello, World!");
 
         // Undo should bring us back to the manual commit
         assert!(tree.try_undo(0).is_some());
-        assert_eq!(tree.to_string_allocating(), "Hello, World!");
+        assert_eq!(tree.to_string(), "Hello, World!");
 
         tree.commit_head(0);
         tree.remove_no_commit(0, 7);
-        assert_eq!(tree.to_string_allocating(), "World!");
+        assert_eq!(tree.to_string(), "World!");
 
         tree.remove_no_commit(5, 1);
-        assert_eq!(tree.to_string_allocating(), "World");
+        assert_eq!(tree.to_string(), "World");
 
         assert!(tree.try_undo(0).is_some());
-        assert_eq!(tree.to_string_allocating(), "Hello, World!");
+        assert_eq!(tree.to_string(), "Hello, World!");
 
         assert!(tree.try_redo(0).is_some());
-        assert_eq!(tree.to_string_allocating(), "World");
+        assert_eq!(tree.to_string(), "World");
     }
 
     #[test]
@@ -316,41 +316,41 @@ mod tests_fredbuf {
         let initial_commit = tree.root;
 
         tree.insert_no_commit(0, "a");
-        assert_eq!(tree.to_string_allocating(), "aHello, World!");
+        assert_eq!(tree.to_string(), "aHello, World!");
         assert!(tree.try_undo(0).is_none());
 
         let commit = tree.root;
 
         // tree.snap_to(initial_commit)
         tree.root = initial_commit;
-        assert_eq!(tree.to_string_allocating(), "Hello, World!");
+        assert_eq!(tree.to_string(), "Hello, World!");
 
         // Snap back to commit
         tree.root = commit;
-        assert_eq!(tree.to_string_allocating(), "aHello, World!");
+        assert_eq!(tree.to_string(), "aHello, World!");
 
         tree.remove_no_commit(0, 8);
-        assert_eq!(tree.to_string_allocating(), "World!");
+        assert_eq!(tree.to_string(), "World!");
 
         tree.root = commit;
-        assert_eq!(tree.to_string_allocating(), "aHello, World!");
+        assert_eq!(tree.to_string(), "aHello, World!");
 
         tree.root = initial_commit;
-        assert_eq!(tree.to_string_allocating(), "Hello, World!");
+        assert_eq!(tree.to_string(), "Hello, World!");
 
         // Create a new branch
         tree.insert_no_commit(13, " My name is fredbuf.");
-        assert_eq!(tree.to_string_allocating(), "Hello, World! My name is fredbuf.");
+        assert_eq!(tree.to_string(), "Hello, World! My name is fredbuf.");
 
         let branch = tree.root;
 
         // Revert back
         tree.root = commit;
-        assert_eq!(tree.to_string_allocating(), "aHello, World!");
+        assert_eq!(tree.to_string(), "aHello, World!");
 
         // Revert to branch
         tree.root = branch;
-        assert_eq!(tree.to_string_allocating(), "Hello, World! My name is fredbuf.");
+        assert_eq!(tree.to_string(), "Hello, World! My name is fredbuf.");
     }
 }
 
@@ -491,31 +491,31 @@ mod tests_stress {
         tree.insert(3, "D");
         tree.insert(4, "E");
 
-        assert_eq!(tree.to_string_allocating(), "ABCDE");
+        assert_eq!(tree.to_string(), "ABCDE");
         assert_eq!(tree.undo_stack.len(), 5);
 
         tree.try_undo(0);
         tree.try_undo(0);
         tree.try_undo(0);
 
-        assert_eq!(tree.to_string_allocating(), "AB");
+        assert_eq!(tree.to_string(), "AB");
         assert_eq!(tree.undo_stack.len(), 2);
         assert_eq!(tree.redo_stack.len(), 3);
 
         tree.insert(2, "X");
 
-        assert_eq!(tree.to_string_allocating(), "ABX");
+        assert_eq!(tree.to_string(), "ABX");
         assert_eq!(tree.undo_stack.len(), 3);
         assert!(tree.redo_stack.is_empty(), "Redo stack was not cleared on diverging edit!");
 
         assert!(tree.try_redo(0).is_none());
 
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "AB");
+        assert_eq!(tree.to_string(), "AB");
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "A");
+        assert_eq!(tree.to_string(), "A");
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "");
+        assert_eq!(tree.to_string(), "");
     }
 
     #[test]
@@ -533,11 +533,11 @@ mod tests_stress {
 
         tree.apply_edits(0, &mut edits);
 
-        assert_eq!(tree.to_string_allocating(), "> Line 1\n> Line 2\n> Line 3");
+        assert_eq!(tree.to_string(), "> Line 1\n> Line 2\n> Line 3");
         assert_eq!(tree.undo_stack.len(), pre_tx_undos + 1);
 
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "Line 1\nLine 2\nLine 3");
+        assert_eq!(tree.to_string(), "Line 1\nLine 2\nLine 3");
     }
 
     #[test]
@@ -549,7 +549,7 @@ mod tests_stress {
         tree.remove_at(0, 5);
         tree.insert(0, "Step");
 
-        assert_eq!(tree.to_string_allocating(), "Step 1 -> Phase 2");
+        assert_eq!(tree.to_string(), "Step 1 -> Phase 2");
         let active_nodes_before = tree.pieces.nodes.len();
 
         tree.compact();
@@ -558,14 +558,14 @@ mod tests_stress {
         assert!(active_nodes_after < active_nodes_before, "Compaction didn't reclaim nodes");
 
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), " 1 -> Phase 2");
+        assert_eq!(tree.to_string(), " 1 -> Phase 2");
 
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "Phase 1 -> Phase 2");
+        assert_eq!(tree.to_string(), "Phase 1 -> Phase 2");
 
         tree.try_redo(0);
         tree.try_redo(0);
-        assert_eq!(tree.to_string_allocating(), "Step 1 -> Phase 2");
+        assert_eq!(tree.to_string(), "Step 1 -> Phase 2");
     }
 
     #[test]
@@ -574,7 +574,7 @@ mod tests_stress {
 
         // 1. Removing from an empty document shouldn't panic
         tree.remove_at(0, 100);
-        assert_eq!(tree.to_string_allocating(), "");
+        assert_eq!(tree.to_string(), "");
 
         // 2. Inserting empty strings shouldn't create phantom pieces
         tree.insert(0, "");
@@ -583,7 +583,7 @@ mod tests_stress {
         tree.insert(0, "A");
         // 3. Removing past the end of the document should clamp automatically
         tree.remove_at(0, 1000);
-        assert_eq!(tree.to_string_allocating(), "");
+        assert_eq!(tree.to_string(), "");
 
         // 4. Multi-cursor overlapping deletes (Transaction drift edge case)
         tree.insert(0, "123456789");
@@ -605,23 +605,23 @@ mod tests_stress {
         tree.insert(1, "B"); // Undo 2
         tree.insert(2, "C"); // Undo 3
 
-        assert_eq!(tree.to_string_allocating(), "ABC");
+        assert_eq!(tree.to_string(), "ABC");
 
         // Yo-yo down
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "AB");
+        assert_eq!(tree.to_string(), "AB");
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "A");
+        assert_eq!(tree.to_string(), "A");
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "");
+        assert_eq!(tree.to_string(), "");
 
         // Yo-yo up
         tree.try_redo(0);
-        assert_eq!(tree.to_string_allocating(), "A");
+        assert_eq!(tree.to_string(), "A");
         tree.try_redo(0);
-        assert_eq!(tree.to_string_allocating(), "AB");
+        assert_eq!(tree.to_string(), "AB");
         tree.try_redo(0);
-        assert_eq!(tree.to_string_allocating(), "ABC");
+        assert_eq!(tree.to_string(), "ABC");
 
         // The alternate timeline test: Undo once, then type, destroying the Redo future
         tree.try_undo(0); // Text is now "AB"
@@ -629,7 +629,7 @@ mod tests_stress {
 
         // Try to redo "C". It should be None because typing "X" burned the timeline.
         assert!(tree.try_redo(0).is_none());
-        assert_eq!(tree.to_string_allocating(), "ABX");
+        assert_eq!(tree.to_string(), "ABX");
     }
 
     #[test]
@@ -675,15 +675,15 @@ mod tests_stress {
         tree.insert(3, "GHI");
         // Insert directly in the middle
         tree.insert(3, "DEF");
-        assert_eq!(tree.to_string_allocating(), "ABCDEFGHI");
+        assert_eq!(tree.to_string(), "ABCDEFGHI");
 
         // Remove from the very start
         tree.remove_at(0, 3);
-        assert_eq!(tree.to_string_allocating(), "DEFGHI");
+        assert_eq!(tree.to_string(), "DEFGHI");
 
         // Remove from the very end
         tree.remove_at(3, 3);
-        assert_eq!(tree.to_string_allocating(), "DEF");
+        assert_eq!(tree.to_string(), "DEF");
     }
 
     #[test]
@@ -696,7 +696,7 @@ mod tests_stress {
 
         // Delete the exact bounds of the center piece
         tree.remove_at(4, 6);
-        assert_eq!(tree.to_string_allocating(), "LeftRight");
+        assert_eq!(tree.to_string(), "LeftRight");
         assert_eq!(tree.pieces().count(), 2); // Should perfectly fuse the tree to 2 pieces
     }
 
@@ -705,7 +705,7 @@ mod tests_stress {
         let mut tree = PieceTree::new();
         tree.insert(0, "Data Oriented Design");
         tree.remove(..); // Using our ropey API
-        assert_eq!(tree.to_string_allocating(), "");
+        assert_eq!(tree.to_string(), "");
         assert_eq!(tree.len_bytes(), 0);
         assert_eq!(tree.len_chars(), 0);
         assert_eq!(tree.len_lines(), 1); // An empty document is always 1 line
@@ -726,7 +726,7 @@ mod tests_stress {
         // Apply with primary cursor at offset 0
         tree.apply_edits(0, &mut edits);
 
-        assert_eq!(tree.to_string_allocating(), "- Apple\n- Banana\n- Cherry");
+        assert_eq!(tree.to_string(), "- Apple\n- Banana\n- Cherry");
     }
 
     #[test]
@@ -744,7 +744,7 @@ mod tests_stress {
         ];
 
         tree.apply_edits(0, &mut edits);
-        assert_eq!(tree.to_string_allocating(), "<b>Word1</b> <b>Word2</b>");
+        assert_eq!(tree.to_string(), "<b>Word1</b> <b>Word2</b>");
     }
 
     #[test]
@@ -760,13 +760,13 @@ mod tests_stress {
         ];
 
         tree.apply_edits(19, &mut edits);
-        assert_eq!(tree.to_string_allocating(), "Line \nLine \nLine ");
+        assert_eq!(tree.to_string(), "Line \nLine \nLine ");
 
         // The user realizes they made a mistake and hits Undo.
         // Because apply_edits grouped them, one try_undo() should revert all 3 deletes.
         let undo_jump_offset = tree.try_undo(0).unwrap();
 
-        assert_eq!(tree.to_string_allocating(), "Line 1\nLine 2\nLine 3");
+        assert_eq!(tree.to_string(), "Line 1\nLine 2\nLine 3");
         assert_eq!(undo_jump_offset, 19); // The viewport should jump back to the primary cursor!
     }
 
@@ -783,7 +783,7 @@ mod tests_stress {
         ];
 
         tree.apply_edits(0, &mut edits);
-        assert_eq!(tree.to_string_allocating(), "Goodbye World!");
+        assert_eq!(tree.to_string(), "Goodbye World!");
     }
 }
 
@@ -874,7 +874,7 @@ mod tests_proptest {
                 }
 
                 // INVARIANT: The Piece Tree MUST strictly equal the Oracle String
-                assert_eq!(tree.to_string_allocating(), oracle);
+                assert_eq!(tree.to_string(), oracle);
                 assert_eq!(tree.len_bytes() as usize, oracle.len());
                 assert_eq!(tree.len_chars() as usize, oracle.chars().count());
             }
@@ -905,7 +905,7 @@ mod tests_edit_merging {
         tree.insert(3, "l");
         tree.insert(4, "o");
 
-        assert_eq!(tree.to_string_allocating(), "Hello");
+        assert_eq!(tree.to_string(), "Hello");
 
         // If merging is working, this should logically be exactly ONE piece.
         // Without merging, this would be a fragmented tree of 5 distinct pieces.
@@ -925,7 +925,7 @@ mod tests_edit_merging {
         tree.insert(2, "l");
         tree.insert(3, "l");
 
-        assert_eq!(tree.to_string_allocating(), "Hello");
+        assert_eq!(tree.to_string(), "Hello");
 
         // The tree should naturally fracture around the cursor jump.
         // Expected logical pieces: ["H"], ["ell"], ["o"]
@@ -940,7 +940,7 @@ mod tests_edit_merging {
         tree.insert(1, "B");
         tree.insert(2, "C");
 
-        assert_eq!(tree.to_string_allocating(), "ABC");
+        assert_eq!(tree.to_string(), "ABC");
         assert_eq!(tree.pieces().count(), 1, "Should be perfectly merged in memory");
 
         // Travel back in time.
@@ -949,23 +949,23 @@ mod tests_edit_merging {
         // They safely ignore the extra bytes appended to the dynamic buffer.
 
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "AB");
+        assert_eq!(tree.to_string(), "AB");
 
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "A");
+        assert_eq!(tree.to_string(), "A");
 
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "");
+        assert_eq!(tree.to_string(), "");
 
         // Travel forward
         tree.try_redo(0);
-        assert_eq!(tree.to_string_allocating(), "A");
+        assert_eq!(tree.to_string(), "A");
 
         tree.try_redo(0);
-        assert_eq!(tree.to_string_allocating(), "AB");
+        assert_eq!(tree.to_string(), "AB");
 
         tree.try_redo(0);
-        assert_eq!(tree.to_string_allocating(), "ABC");
+        assert_eq!(tree.to_string(), "ABC");
     }
 
     #[test]
@@ -980,7 +980,7 @@ mod tests_edit_merging {
         tree.insert_no_commit(5, "Y");
         tree.insert_no_commit(6, "Z");
 
-        assert_eq!(tree.to_string_allocating(), "BaseXYZ");
+        assert_eq!(tree.to_string(), "BaseXYZ");
 
         // The transaction perfectly merged with the previous text!
         // This is mathematically valid because the old root in the undo stack
@@ -989,7 +989,7 @@ mod tests_edit_merging {
 
         // PROVE THE HISTORY IS INTACT
         tree.try_undo(0);
-        assert_eq!(tree.to_string_allocating(), "Base", "Undo successfully truncated the view of the merged piece");
+        assert_eq!(tree.to_string(), "Base", "Undo successfully truncated the view of the merged piece");
         assert_eq!(tree.pieces().count(), 1);
     }
 }

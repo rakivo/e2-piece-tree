@@ -18,9 +18,14 @@ smallvec         = { version = "=1.15.1",  default-features = false, features = 
 proptest = "1.4"
 criterion = "0.5"
 rand = "0.8"
+fastrand = "2.4.1"
 
 [[bench]]
 name = "piece_tree_bench"
+harness = false
+
+[[bench]]
+name = "insert"
 harness = false
 
 [profile.release-fast]
