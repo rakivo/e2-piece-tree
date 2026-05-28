@@ -10,15 +10,15 @@ runtime-dispatch-simd = ["bytecount/runtime-dispatch-simd"]
 generic-simd = ["bytecount/generic-simd"]
 
 [dependencies]
+rand      = "0.8"
 bytecount        = { version = "=0.6.9",   default-features = false }
 cranelift-entity = { version = "=0.132.0", default-features = false }
 smallvec         = { version = "=1.15.1",  default-features = false, features = ["const_generics"] }
 
 [dev-dependencies]
-proptest = "1.4"
+proptest  = "1.4"
 criterion = "0.5"
-rand = "0.8"
-fastrand = "2.4.1"
+fastrand  = "2.4.1"
 
 [[bench]]
 name = "piece_tree_bench"
