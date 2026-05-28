@@ -184,14 +184,13 @@ impl Buffers {
     #[inline(always)]
     #[must_use]
     pub fn count_chars(&self, index: u32, offset: u32, len: u32) -> u32 {
-        self.get_slice(index, offset, len).chars().count() as u32
+        bytecount::num_chars(self.get_slice(index, offset, len).as_bytes()) as u32
     }
 
     #[inline(always)]
     #[must_use]
     pub fn count_newlines(&self, index: u32, offset: u32, len: u32) -> u32 {
-        let bytes = self.get_slice(index, offset, len).as_bytes();
-        bytecount::count(bytes, b'\n') as _
+        bytecount::count(self.get_slice(index, offset, len).as_bytes(), b'\n') as _
     }
 }
 
@@ -590,8 +589,8 @@ impl PieceTree {
         }
 
         let length = text.len() as u32;
-        let newline_count = text.as_bytes().iter().filter(|&&b| b == b'\n').count() as u32;
-        let char_count = text.chars().count() as u32;
+        let newline_count = bytecount::count(text.as_bytes(), b'\n') as u32;
+        let char_count = bytecount::num_chars(text.as_bytes()) as u32;
 
         tree.buffers.original_buffers.push(text.into());
         let buffer_index = (tree.buffers.original_buffers.len() - 1) as u32;
@@ -696,7 +695,7 @@ impl PieceTree {
         self.buffers.modifications_buffer.push_str(text);
 
         let newline_count = bytecount::count(text.as_bytes(), b'\n') as u32;
-        let char_count = text.chars().count() as u32;
+        let char_count = bytecount::num_chars(text.as_bytes()) as u32;
         let text_len   = text.len() as u32;
 
         let new_piece = Piece {
@@ -1112,7 +1111,7 @@ impl PieceTree {
         let length = squashed_text.len() as u32;
 
         let newline_count = bytecount::count(squashed_text.as_bytes(), b'\n') as u32;
-        let char_count = squashed_text.chars().count() as u32;
+        let char_count = bytecount::num_chars(squashed_text.as_bytes()) as u32;
 
         self.buffers = Buffers::new();
         self.buffers.original_buffers.push(squashed_text.into());
@@ -1464,7 +1463,7 @@ impl PieceTree {
                 let rel_byte = byte_offset - (current_byte + left_bytes);
 
                 let text = self.buffers.get_slice(p.buffer_index, p.offset, p.length);
-                let chars_up_to = text[..rel_byte as usize].chars().count() as u32;
+                let chars_up_to = bytecount::num_chars(&text.as_bytes()[..rel_byte as usize]) as u32;
 
                 let left_chars = self.pieces.get(node.left).subtree_chars;
                 return Some(current_char + left_chars + chars_up_to);
@@ -2252,7 +2251,7 @@ pub fn assert_piece_metadata(tree: &PieceTree) {   // @Redundant?
         assert!(p.length > 0,     "Zero-length piece found");
 
         let slice = &buf[start..end];
-        let actual_chars = slice.chars().count() as u32;
+        let actual_chars = bytecount::num_chars(slice.as_bytes()) as u32;
         let actual_nl = bytecount::count(slice.as_bytes(), b'\n') as u32;
 
         assert_eq!(p.char_count,    actual_chars, "char_count mismatch");
