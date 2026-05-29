@@ -20,7 +20,7 @@ cranelift-entity = { version = "=0.132.0", default-features = false }
 smallvec         = { version = "=1.15.1",  default-features = false, features = ["const_generics"] }
 
 [dev-dependencies]
-rand = "0.8"
+rand      = "0.8"
 proptest  = "1.4"
 criterion = "0.5"
 fastrand  = "2.4.1"
