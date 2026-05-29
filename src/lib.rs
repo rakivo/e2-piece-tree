@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "write"), no_std)]
 
-#![warn(clippy::all, clippy::pedantic, dead_code,)] //clippy::cargo)]
+#![warn(clippy::all, clippy::pedantic, dead_code, clippy::cargo)]
 #![allow(
     unused_assignments,
     clippy::inline_always,
@@ -47,16 +47,33 @@ use core::str;
 use core::cmp::Ordering;
 use core::ops::{Bound, Deref, RangeBounds};
 
+#[cfg(not(feature = "dont_vendor"))]
+mod cranelift_entity_vendor;
+#[cfg(not(feature = "dont_vendor"))]
+use cranelift_entity_vendor as cranelift_entity;
+
+#[cfg(not(feature = "dont_vendor"))]
+mod smallvec_vendor;
+#[cfg(not(feature = "dont_vendor"))]
+use smallvec_vendor as smallvec;
+
+#[cfg(not(feature = "dont_vendor"))]
+mod bytecount_vendor;
+#[cfg(not(feature = "dont_vendor"))]
+use bytecount_vendor as bytecount;
+
 use smallvec::SmallVec;
 use cranelift_entity::{EntityRef, PrimaryMap};
+#[cfg(feature = "dont_vendor")]
+use cranelift_entity::entity_impl;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct BufferRef(pub u32);
-cranelift_entity::entity_impl!(BufferRef);
+entity_impl!(BufferRef);
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct NodeRef(pub u32);
-cranelift_entity::entity_impl!(NodeRef);
+entity_impl!(NodeRef);
 
 pub const NIL: NodeRef = NodeRef(0);
 
@@ -335,6 +352,7 @@ impl Buffers {
 
     /// Converts an absolute char index to an absolute byte offset for a specific buffer
     #[must_use]
+    #[inline]
     pub fn char_to_byte_absolute(&self, buffer: BufferRef, target_char: u32) -> u32 {
         if target_char == 0 { return 0; }
 
@@ -350,9 +368,6 @@ impl Buffers {
         let remainder_chars = target_char - current_char;
         if remainder_chars == 0 { return current_byte; }
 
-        //
-        // Bounded scan: Never exceeds 63 characters
-        //
         let text = self.get(buffer);
         let slice = unsafe { text.get_unchecked(current_byte as usize..) };
 
@@ -360,13 +375,14 @@ impl Buffers {
             .char_indices()
             .nth(remainder_chars as usize)
             .map(|(b, _)| b as u32)
-            .unwrap_or_else(|| slice.len() as u32); // Fallback to end if out of bounds
+            .unwrap_or_else(|| slice.len() as u32);  // Fallback to end if out of bounds
 
         current_byte + additional_bytes
     }
 
     /// Converts an absolute byte offset to an absolute char index for a specific buffer
     #[must_use]
+    #[inline]
     pub fn byte_to_char_absolute(&self, buffer: BufferRef, target_byte: u32) -> u32 {
         if target_byte == 0 { return 0; }
 
@@ -382,7 +398,6 @@ impl Buffers {
         let remainder_bytes = target_byte - current_byte;
         if remainder_bytes == 0 { return current_char; }
 
-        // Bounded scan: Never exceeds 63 characters
         let text = self.get(buffer);
         let slice = unsafe { text.get_unchecked(current_byte as usize..target_byte as usize) };
         let additional_chars = bytecount::num_chars(slice.as_bytes()) as u32;

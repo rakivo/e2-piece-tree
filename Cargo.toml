@@ -2,6 +2,26 @@
 name = "piece-tree"
 version = "0.1.0"
 edition = "2024"
+authors = ["Mark Tyrkba <marktyrkba456@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Purely functional (immutable) implementation of Piece Tree, inspired by fredbuf"
+categories = [
+    "data-structures",
+    "text-processing",
+    "no-std",
+]
+keywords = [
+    "piece-tree",
+    "piece-table",
+    "immutable",
+    "functional",
+    "text-buffer",
+    "text-editor",
+    "rope",
+    "no-std",
+    "vendor"
+]
+readme = "README.md"
 
 [features]
 default = ["write"]
@@ -11,13 +31,15 @@ no_std_nightly_simd = ["runtime-dispatch-simd"]
 
 write = []
 
-runtime-dispatch-simd = ["bytecount/runtime-dispatch-simd"]
-generic-simd = ["bytecount/generic-simd"]
+dont_vendor = ["dep:bytecount", "dep:cranelift-entity", "dep:smallvec"]
+
+runtime-dispatch-simd = ["bytecount?/runtime-dispatch-simd"]
+generic-simd = ["bytecount?/generic-simd"]
 
 [dependencies]
-bytecount        = { version = "=0.6.9",   default-features = false }
-cranelift-entity = { version = "=0.132.0", default-features = false }
-smallvec         = { version = "=1.15.1",  default-features = false, features = ["const_generics"] }
+bytecount        = { version = "=0.6.9",  default-features = false, optional = true }
+cranelift-entity = { version = "=0.132.0",default-features = false, optional = true }
+smallvec         = { version = "=1.15.1", default-features = false, optional = true, features = ["const_generics"] }
 
 [dev-dependencies]
 rand      = "0.8"
@@ -36,14 +58,3 @@ harness = false
 [[bench]]
 name = "remove"
 harness = false
-
-[profile.release-fast]
-inherits = "release"
-opt-level = 3
-panic = "abort"
-codegen-units = 1
-lto = "fat"
-debug = false
-strip = true
-debug-assertions = false
-overflow-checks = false
