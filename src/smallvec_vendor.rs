@@ -1,3 +1,5 @@
+#![allow(clippy::pedantic, clippy::all)]
+
 // Portions of this file are copied from the `smallvec` crate.
 // Copyright (c) The Servo Project Developers.
 // Licensed under the MIT License (https://opensource.org/licenses/MIT).

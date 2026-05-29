@@ -95,6 +95,43 @@ fn main() {
 }
 ```
 
+## Tree Snapshotting
+
+```
+fn main() {
+    use piece_tree::PieceTree;
+
+    let mut tree = PieceTree::new();
+    let mut cursor = 0;
+
+    // Basic typing and taking a snapshot
+    tree.insert(cursor, "Hello ");   cursor += 6;
+    tree.insert(cursor, "World!");   cursor += 6;
+    let snap = tree.take_snapshot(cursor); // Saves "Hello World!" state
+
+    // Batch mutations into a single undo group
+    tree.begin_undo_group(cursor);
+    tree.insert_no_commit(cursor, " Everything"); cursor += 11;
+    tree.insert_no_commit(cursor, " is great!");  cursor += 10;
+    tree.end_undo_group();
+    assert_eq!(tree.to_string(), "Hello World! Everything is great!");
+
+    // Undo and Redo the transaction group
+    cursor = tree.try_undo(cursor).unwrap();
+    assert_eq!(tree.to_string(), "Hello World!");
+
+    cursor = tree.try_redo(cursor).unwrap();
+    assert_eq!(tree.to_string(), "Hello World! Everything is great!");
+
+    // Revert to snapshot (and show that the jump itself can be undone)
+    cursor = tree.snap_to(snap, cursor);
+    assert_eq!(tree.to_string(), "Hello World!");
+
+    cursor = tree.try_undo(cursor).unwrap();
+    assert_eq!(tree.to_string(), "Hello World! Everything is great!");
+}
+```
+
 ## Vendoring
 
 To keep `piece-tree` highly optimized and tailored for its specific use case, portions of the following third-party crates have been integrated directly into the source code:

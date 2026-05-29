@@ -1,3 +1,5 @@
+#![allow(clippy::pedantic, clippy::all)]
+
 // Portions of this file are copied from the `cranelift_entity` crate.
 // Original code Copyright (c) The Cranelift Project Developers.
 // Licensed under the Apache License, Version 2.0 with LLVM Exception.
@@ -32,7 +34,7 @@ macro_rules! entity_impl {
         impl $crate::EntityRef for $entity {
             #[inline]
             fn new(index: usize) -> Self {
-                debug_assert!(index < (core::u32::MAX as usize));
+                debug_assert!(index < (u32::MAX as usize));
                 $entity(index as u32)
             }
 
@@ -47,7 +49,7 @@ macro_rules! entity_impl {
             #[allow(dead_code, reason = "macro-generated code")]
             #[inline]
             pub fn from_u32(x: u32) -> Self {
-                debug_assert!(x < core::u32::MAX);
+                debug_assert!(x < u32::MAX);
                 $entity(x)
             }
 
@@ -110,7 +112,7 @@ macro_rules! entity_impl {
         impl $crate::EntityRef for $entity {
             #[inline]
             fn new(index: usize) -> Self {
-                debug_assert!(index < (core::u32::MAX as usize));
+                debug_assert!(index < (u32::MAX as usize));
                 let $arg = index as u32;
                 $to_expr
             }
@@ -125,12 +127,12 @@ macro_rules! entity_impl {
         impl $crate::packed_option::ReservedValue for $entity {
             #[inline]
             fn reserved_value() -> $entity {
-                $entity::from_u32(core::u32::MAX)
+                $entity::from_u32(u32::MAX)
             }
 
             #[inline]
             fn is_reserved_value(&self) -> bool {
-                self.as_u32() == core::u32::MAX
+                self.as_u32() == u32::MAX
             }
         }
 
@@ -139,7 +141,7 @@ macro_rules! entity_impl {
             #[allow(dead_code, reason = "macro-generated code")]
             #[inline]
             pub fn from_u32(x: u32) -> Self {
-                debug_assert!(x < core::u32::MAX);
+                debug_assert!(x < u32::MAX);
                 let $arg = x;
                 $to_expr
             }
@@ -168,7 +170,6 @@ macro_rules! entity_impl {
 }
 
 /// Densely numbered entity references as mapping keys.
-
 /// A primary mapping `K -> V` allocating dense entity references.
 ///
 /// The `PrimaryMap` data structure uses the dense index space to implement a map with a vector.
@@ -501,7 +502,6 @@ impl<K: EntityRef + fmt::Debug, V: fmt::Debug> fmt::Debug for PrimaryMap<K, V> {
 ///
 /// When `core::iter::Step` is stabilized, `Keys` could be implemented as a wrapper around
 /// `core::ops::Range`, but for now, we implement it manually.
-
 /// Iterate over all keys in order.
 pub struct Keys<K: EntityRef> {
     pos: usize,

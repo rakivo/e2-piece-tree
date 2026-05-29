@@ -6,9 +6,15 @@
     clippy::inline_always,
     clippy::uninlined_format_args, // ?...
     clippy::borrow_as_ptr,
+    clippy::negative_feature_names,
+    clippy::redundant_closure_for_method_calls,
+    clippy::sliced_string_as_bytes,
+    clippy::should_implement_trait,
     clippy::collapsible_if,
     clippy::new_without_default,
+    clippy::comparison_chain,
     clippy::redundant_field_names,
+    clippy::semicolon_if_nothing_returned,
     clippy::pub_underscore_fields,
     clippy::struct_field_names,
     clippy::ptr_as_ptr,
@@ -271,6 +277,7 @@ impl Buffers {
     }
 
     #[inline]
+    #[must_use]
     pub fn count_chars_and_newlines(&self, buffer: BufferRef, start_offset: u32, len: u32) -> (u32, u32) {
         if len == 0 { return (0, 0) }
 
@@ -373,9 +380,7 @@ impl Buffers {
 
         let additional_bytes = slice
             .char_indices()
-            .nth(remainder_chars as usize)
-            .map(|(b, _)| b as u32)
-            .unwrap_or_else(|| slice.len() as u32);  // Fallback to end if out of bounds
+            .nth(remainder_chars as usize).map_or_else(|| slice.len() as u32, |(b, _)| b as u32);  // Fallback to end if out of bounds
 
         current_byte + additional_bytes
     }
@@ -799,7 +804,7 @@ impl Pieces {
 }
 
 impl PieceTree {
-    /// Slices a tree exactly at `offset`, returning (LeftTree, RightTree)
+    /// Slices a tree exactly at `offset`, returning (`LeftTree`, `RightTree`)
     #[inline]
     pub fn split(&mut self, root: NodeRef, offset: u32) -> (NodeRef, NodeRef) {
         if root == NIL {
@@ -921,6 +926,7 @@ impl PieceTree {
 impl Pieces {
     /// Recursively counts the black height of a given subtree
     #[inline(always)]
+    #[must_use]
     pub fn black_height(&self, mut node: NodeRef) -> u32 {
         let mut h = 0;
         while node != NIL {
@@ -1078,6 +1084,59 @@ impl PieceTree {
         }
 
         tree
+    }
+}
+
+impl PieceTree {
+    /// Captures the current state of the document.
+    #[inline]
+    #[must_use]
+    pub fn take_snapshot(&self, current_cursor: u32) -> HistoryEntry {
+        HistoryEntry {
+            root: self.root,
+            cursor_offset: current_cursor,
+        }
+    }
+
+    /// Restores the tree to a previously saved snapshot.
+    /// Returns the cursor offset from the snapshot.
+    #[inline]
+    #[must_use]
+    pub fn snap_to(&mut self, snapshot: HistoryEntry, current_cursor: u32) -> u32 {
+        if self.root == snapshot.root {
+            return snapshot.cursor_offset;
+        }
+
+        //
+        // Prevent snapping while in the middle of an active transaction
+        //
+        assert!(self.transaction_depth == 0, "Cannot snap_to during an active undo group");
+
+        //
+        // Save the current state to the undo stack so the user can undo the jump
+        //
+        self.undo_stack.push(HistoryEntry {
+            root: self.root,
+            cursor_offset: current_cursor,
+        });
+
+        //
+        // Clear the redo stack
+        //
+        self.redo_stack.clear();
+
+        //
+        // Invalidate caches
+        //
+        self.last_tree_end = u32::MAX;
+        self.last_mod_end  = u32::MAX;
+
+        //
+        //  Restore the tree
+        //
+        self.root = snapshot.root;
+
+        snapshot.cursor_offset
     }
 }
 
@@ -1378,7 +1437,7 @@ impl PieceTree {
         if right_start == 0 { return None; }
         if right.buffer != MOD_BUFFER { return None; }
 
-        let Some((left_index, left_rel)) = self.find_position(right_start - 1, false) else { return None };
+        let (left_index, left_rel) = self.find_position(right_start - 1, false)?;
         let left = self.pieces.get_piece(left_index);
 
         if left.buffer != MOD_BUFFER { return None; }
@@ -2665,11 +2724,13 @@ pub fn assert_invariants(tree: &PieceTree) {
 
         assert_eq!(l_bh, r_bh, "black height mismatch");
 
-        let bh = l_bh + if n.color() == Color::Black { 1 } else { 0 };
+        let bh = l_bh + usize::from(n.color() == Color::Black);
         (expected_len, bh)
     }
 
-    if tree.root != NIL {
+    if tree.root == NIL {
+        assert_eq!(tree.total_length(), 0,            "Empty tree has nonzero length");
+    } else {
         assert_eq!(
             tree.pieces.nodes[tree.root].color(),
             Color::Black,
@@ -2678,8 +2739,6 @@ pub fn assert_invariants(tree: &PieceTree) {
         let (len, _) = check(tree, tree.root);
         assert_eq!(len, tree.total_length() as usize, "Tree length and root length differ");
 
-    } else {
-        assert_eq!(tree.total_length(), 0,            "Empty tree has nonzero length");
     }
 }
 
@@ -2715,7 +2774,7 @@ pub fn assert_piece_metadata(tree: &PieceTree) {
         //
         let prefix = &buf.as_bytes()[..p.byte_offset as usize];
         let actual_start_char = bytecount::num_chars(prefix) as u32;
-        let actual_start_line = prefix.iter().filter(|&&b| b == b'\n').count() as u32;
+        let actual_start_line = bytecount::count(prefix, b'\n') as u32;
 
         assert_eq!(p.piece_start_char,  actual_start_char,
             "piece_start_char mismatch buffer={} offset={}", p.buffer.as_u32(), p.byte_offset);
@@ -2773,7 +2832,7 @@ pub fn assert_coordinates(tree: &PieceTree, oracle: &str) {
     fn oracle_offset_to_line_col(s: &str, byte_offset: usize) -> (usize, usize) {
         let slice = &s[..byte_offset];
         let line  = bytecount::count(slice.as_bytes(), b'\n');
-        let last_nl = slice.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let last_nl = slice.rfind('\n').map_or(0, |i| i + 1);
         let col   = bytecount::num_chars(s[last_nl..byte_offset].as_bytes());
         (line, col)
     }
@@ -2827,13 +2886,13 @@ pub fn assert_coordinates(tree: &PieceTree, oracle: &str) {
     // Sample ~8 positions spread across the document
     //
     for i in 0u32..8 {
-        let byte = ((total_bytes as u64 * ((i as u64 * 2654435761) & 0xFFFFFFFF)) >> 32) as u32 % total_bytes.max(1);
+        let byte =
+            ((total_bytes as u64 * ((i as u64 * 2_654_435_761) & 0xFFFF_FFFF)) >> 32) as u32 % total_bytes.max(1);
 
         // Snap to char boundary
         let byte = oracle.as_bytes()[..byte as usize]
-            .iter().rposition(|&b| b < 0x80 || b >= 0xC0)
-            .map(|i| i as u32)
-            .unwrap_or(0);
+            .iter().rposition(|&b| !(0x80..0xC0).contains(&b))
+            .map_or(0, |i| i as u32);
 
         check_coordinate(tree, oracle, byte);
     }
