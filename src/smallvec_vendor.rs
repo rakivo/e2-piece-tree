@@ -124,31 +124,6 @@ use std::io;
 
 /// Creates a [`SmallVec`] containing the arguments.
 ///
-/// `smallvec!` allows `SmallVec`s to be defined with the same syntax as array expressions.
-/// There are two forms of this macro:
-///
-/// - Create a [`SmallVec`] containing a given list of elements:
-///
-/// ```
-/// # use smallvec::{smallvec, SmallVec};
-/// # fn main() {
-/// let v: SmallVec<[_; 128]> = smallvec![1, 2, 3];
-/// assert_eq!(v[0], 1);
-/// assert_eq!(v[1], 2);
-/// assert_eq!(v[2], 3);
-/// # }
-/// ```
-///
-/// - Create a [`SmallVec`] from a given element and size:
-///
-/// ```
-/// # use smallvec::{smallvec, SmallVec};
-/// # fn main() {
-/// let v: SmallVec<[_; 0x8000]> = smallvec![1; 3];
-/// assert_eq!(v, SmallVec::from_buf([1, 1, 1]));
-/// # }
-/// ```
-///
 /// Note that unlike array expressions this syntax supports all elements
 /// which implement [`Clone`] and the number of elements doesn't have to be
 /// a constant.
@@ -386,20 +361,6 @@ unsafe impl<A: Array + Sync> Sync for SmallVecData<A> {}
 ///
 /// ## Example
 ///
-/// ```rust
-/// use smallvec::SmallVec;
-/// let mut v = SmallVec::<[u8; 4]>::new(); // initialize an empty vector
-///
-/// // The vector can hold up to 4 items without spilling onto the heap.
-/// v.extend(0..4);
-/// assert_eq!(v.len(), 4);
-/// assert!(!v.spilled());
-///
-/// // Pushing another element will force the buffer to spill:
-/// v.push(4);
-/// assert_eq!(v.len(), 5);
-/// assert!(v.spilled());
-/// ```
 pub struct SmallVec<A: Array> {
     // The capacity field is used to determine which of the storage variants is active:
     // If capacity <= Self::inline_capacity() then the inline variant is used and capacity holds the current length of the vector (number of elements actually in use).
@@ -428,15 +389,6 @@ impl<A: Array> SmallVec<A> {
     /// elements.
     ///
     /// Will create a heap allocation only if `n` is larger than the inline capacity.
-    ///
-    /// ```
-    /// # use smallvec::SmallVec;
-    ///
-    /// let v: SmallVec<[u8; 3]> = SmallVec::with_capacity(100);
-    ///
-    /// assert!(v.is_empty());
-    /// assert!(v.capacity() >= 100);
-    /// ```
     #[inline]
     pub fn with_capacity(n: usize) -> Self {
         let mut v = SmallVec::new();
@@ -447,15 +399,6 @@ impl<A: Array> SmallVec<A> {
     /// Construct a new `SmallVec` from a `Vec<A::Item>`.
     ///
     /// Elements will be copied to the inline buffer if `vec.capacity() <= Self::inline_capacity()`.
-    ///
-    /// ```rust
-    /// use smallvec::SmallVec;
-    ///
-    /// let vec = vec![1, 2, 3, 4, 5];
-    /// let small_vec: SmallVec<[_; 3]> = SmallVec::from_vec(vec);
-    ///
-    /// assert_eq!(&*small_vec, &[1, 2, 3, 4, 5]);
-    /// ```
     #[inline]
     pub fn from_vec(mut vec: Vec<A::Item>) -> SmallVec<A> {
         if vec.capacity() <= Self::inline_capacity() {
@@ -486,17 +429,6 @@ impl<A: Array> SmallVec<A> {
         }
     }
 
-    /// Constructs a new `SmallVec` on the stack from an `A` without
-    /// copying elements.
-    ///
-    /// ```rust
-    /// use smallvec::SmallVec;
-    ///
-    /// let buf = [1, 2, 3, 4, 5];
-    /// let small_vec: SmallVec<_> = SmallVec::from_buf(buf);
-    ///
-    /// assert_eq!(&*small_vec, &[1, 2, 3, 4, 5]);
-    /// ```
     #[inline]
     pub fn from_buf(buf: A) -> SmallVec<A> {
         SmallVec {
@@ -509,14 +441,6 @@ impl<A: Array> SmallVec<A> {
     /// copying elements. Also sets the length, which must be less or
     /// equal to the size of `buf`.
     ///
-    /// ```rust
-    /// use smallvec::SmallVec;
-    ///
-    /// let buf = [1, 2, 3, 4, 5, 0, 0, 0];
-    /// let small_vec: SmallVec<_> = SmallVec::from_buf_and_len(buf, 5);
-    ///
-    /// assert_eq!(&*small_vec, &[1, 2, 3, 4, 5]);
-    /// ```
     #[inline]
     pub fn from_buf_and_len(buf: A, len: usize) -> SmallVec<A> {
         assert!(len <= A::size());
@@ -526,18 +450,6 @@ impl<A: Array> SmallVec<A> {
     /// Constructs a new `SmallVec` on the stack from an `A` without
     /// copying elements. Also sets the length. The user is responsible
     /// for ensuring that `len <= A::size()`.
-    ///
-    /// ```rust
-    /// use smallvec::SmallVec;
-    /// use std::mem::MaybeUninit;
-    ///
-    /// let buf = [1, 2, 3, 4, 5, 0, 0, 0];
-    /// let small_vec: SmallVec<_> = unsafe {
-    ///     SmallVec::from_buf_and_len_unchecked(MaybeUninit::new(buf), 5)
-    /// };
-    ///
-    /// assert_eq!(&*small_vec, &[1, 2, 3, 4, 5]);
-    /// ```
     #[inline]
     pub unsafe fn from_buf_and_len_unchecked(buf: MaybeUninit<A>, len: usize) -> SmallVec<A> {
         SmallVec {
@@ -718,17 +630,6 @@ impl<A: Array> SmallVec<A> {
     }
 
     /// Moves all the elements of `other` into `self`, leaving `other` empty.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use smallvec::{SmallVec, smallvec};
-    /// let mut v0: SmallVec<[u8; 16]> = smallvec![1, 2, 3];
-    /// let mut v1: SmallVec<[u8; 32]> = smallvec![4, 5, 6];
-    /// v0.append(&mut v1);
-    /// assert_eq!(*v0, [1, 2, 3, 4, 5, 6]);
-    /// assert_eq!(*v1, []);
-    /// ```
     pub fn append<B>(&mut self, other: &mut SmallVec<B>)
     where
         B: Array<Item = A::Item>,
@@ -1178,18 +1079,6 @@ impl<A: Array> SmallVec<A> {
     /// `Default::default()` as the second argument.
     ///
     /// Added for `std::vec::Vec` compatibility (added in Rust 1.33.0)
-    ///
-    /// ```
-    /// # use smallvec::{smallvec, SmallVec};
-    /// let mut vec : SmallVec<[_; 4]> = smallvec![1, 2, 3];
-    /// vec.resize_with(5, Default::default);
-    /// assert_eq!(&*vec, &[1, 2, 3, 0, 0]);
-    ///
-    /// let mut vec : SmallVec<[_; 4]> = smallvec![];
-    /// let mut p = 1;
-    /// vec.resize_with(4, || { p *= 2; p });
-    /// assert_eq!(&*vec, &[2, 4, 8, 16]);
-    /// ```
     pub fn resize_with<F>(&mut self, new_len: usize, f: F)
     where
         F: FnMut() -> A::Item,
@@ -1236,44 +1125,6 @@ impl<A: Array> SmallVec<A> {
     /// contents of memory pointed to by the pointer at will. Ensure
     /// that nothing else uses the pointer after calling this
     /// function.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use smallvec::{smallvec, SmallVec};
-    /// use std::mem;
-    /// use std::ptr;
-    ///
-    /// fn main() {
-    ///     let mut v: SmallVec<[_; 1]> = smallvec![1, 2, 3];
-    ///
-    ///     // Pull out the important parts of `v`.
-    ///     let p = v.as_mut_ptr();
-    ///     let len = v.len();
-    ///     let cap = v.capacity();
-    ///     let spilled = v.spilled();
-    ///
-    ///     unsafe {
-    ///         // Forget all about `v`. The heap allocation that stored the
-    ///         // three values won't be deallocated.
-    ///         mem::forget(v);
-    ///
-    ///         // Overwrite memory with [4, 5, 6].
-    ///         //
-    ///         // This is only safe if `spilled` is true! Otherwise, we are
-    ///         // writing into the old `SmallVec`'s inline storage on the
-    ///         // stack.
-    ///         assert!(spilled);
-    ///         for i in 0..len {
-    ///             ptr::write(p.add(i), 4 + i);
-    ///         }
-    ///
-    ///         // Put everything back together into a SmallVec with a different
-    ///         // amount of inline storage, but which is still less than `cap`.
-    ///         let rebuilt = SmallVec::<[_; 2]>::from_raw_parts(p, len, cap);
-    ///         assert_eq!(&*rebuilt, &[4, 5, 6]);
-    ///     }
-    /// }
     #[inline]
     pub unsafe fn from_raw_parts(ptr: *mut A::Item, length: usize, capacity: usize) -> SmallVec<A> {
         // SAFETY: We require caller to provide same ptr as we alloc
@@ -1391,12 +1242,6 @@ where
     }
 
     /// Creates a `SmallVec` with `n` copies of `elem`.
-    /// ```
-    /// use smallvec::SmallVec;
-    ///
-    /// let v = SmallVec::<[char; 128]>::from_elem('d', 2);
-    /// assert_eq!(v, SmallVec::from_buf(['d', 'd']));
-    /// ```
     pub fn from_elem(elem: A::Item, n: usize) -> Self {
         if n > Self::inline_capacity() {
             vec![elem; n].into()
@@ -1467,7 +1312,6 @@ impl<A: Array> BorrowMut<[A::Item]> for SmallVec<A> {
 }
 
 #[cfg(feature = "write")]
-#[cfg_attr(docsrs, doc(cfg(feature = "write")))]
 impl<A: Array<Item = u8>> io::Write for SmallVec<A> {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -1822,7 +1666,6 @@ impl<'a> Drop for SetLenOnDrop<'a> {
     }
 }
 
-#[cfg_attr(docsrs, doc(cfg(feature = "const_generics")))]
 unsafe impl<T, const N: usize> Array for [T; N] {
     type Item = T;
     #[inline]

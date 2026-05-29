@@ -62,25 +62,25 @@ mod tests_char_api {
         // Total = 25 bytes
 
         // Check line starts
-        assert_eq!(tree.line_to_offset(0), Some(0));
-        assert_eq!(tree.line_to_offset(1), Some(7));
-        assert_eq!(tree.line_to_offset(2), Some(19)); // The culprit! Fixed from 20
+        assert_eq!(tree.line_to_byte(0), Some(0));
+        assert_eq!(tree.line_to_byte(1), Some(7));
+        assert_eq!(tree.line_to_byte(2), Some(19)); // The culprit! Fixed from 20
 
         // Check offset to (line, col)
         // Offset 0 = L0, C0
-        assert_eq!(tree.offset_to_line_col(0), Some((0, 0)));
+        assert_eq!(tree.byte_to_line_col(0), Some((0, 0)));
 
         // Middle of Line 0
-        assert_eq!(tree.offset_to_line_col(3), Some((0, 3)));
+        assert_eq!(tree.byte_to_line_col(3), Some((0, 3)));
 
         // Offset 14 = right before the emoji in Line 1
-        assert_eq!(tree.offset_to_line_col(14), Some((1, 7)));
+        assert_eq!(tree.byte_to_line_col(14), Some((1, 7)));
 
         // Offset 18 = right after the emoji in Line 1 (on the newline)
-        assert_eq!(tree.offset_to_line_col(18), Some((1, 8)));
+        assert_eq!(tree.byte_to_line_col(18), Some((1, 8)));
 
         // End of document
-        assert_eq!(tree.offset_to_line_col(25), Some((2, 6)));
+        assert_eq!(tree.byte_to_line_col(25), Some((2, 6)));
     }
 
     #[test]
@@ -197,7 +197,7 @@ mod tests_char_api {
         // L0\n (3 bytes) + L1 (3 bytes) + 🦀 (4 bytes) = 10 bytes total.
         // Wait, "L1 🦀" string: 'L', '1', ' ', '🦀'.
         // So offset right after emoji is 3 + 3 + 4 = 10.
-        let pos = tree.offset_to_line_col(10).unwrap();
+        let pos = tree.byte_to_line_col(10).unwrap();
         assert_eq!(pos, (1, 4)); // Line 1, Column 4 (since emoji is just 1 column wide)
     }
 }
@@ -1026,31 +1026,31 @@ mod tests_coordinates {
         assert_eq!(tree.byte_to_char(30), None);
 
         // --- line_to_offset ---
-        assert_eq!(tree.line_to_offset(0), Some(0));
-        assert_eq!(tree.line_to_offset(1), Some(6));
-        assert_eq!(tree.line_to_offset(2), Some(17));
+        assert_eq!(tree.line_to_byte(0), Some(0));
+        assert_eq!(tree.line_to_byte(1), Some(6));
+        assert_eq!(tree.line_to_byte(2), Some(17));
 
         // Out of bounds line
-        assert_eq!(tree.line_to_offset(3), None);
+        assert_eq!(tree.line_to_byte(3), None);
 
         // --- offset_to_line_col ---
-        assert_eq!(tree.offset_to_line_col(0), Some((0, 0)));
-        assert_eq!(tree.offset_to_line_col(5), Some((0, 5)));
+        assert_eq!(tree.byte_to_line_col(0), Some((0, 0)));
+        assert_eq!(tree.byte_to_line_col(5), Some((0, 5)));
 
         // '🦀' on line 1
-        assert_eq!(tree.offset_to_line_col(6), Some((1, 0)));
+        assert_eq!(tree.byte_to_line_col(6), Some((1, 0)));
 
         // 'w' on line 1
-        assert_eq!(tree.offset_to_line_col(10), Some((1, 1)));
+        assert_eq!(tree.byte_to_line_col(10), Some((1, 1)));
 
         // 'П' on line 2
-        assert_eq!(tree.offset_to_line_col(17), Some((2, 0)));
+        assert_eq!(tree.byte_to_line_col(17), Some((2, 0)));
 
         // EOF
-        assert_eq!(tree.offset_to_line_col(29), Some((2, 6)));
+        assert_eq!(tree.byte_to_line_col(29), Some((2, 6)));
 
         // Out of bounds offset
-        assert_eq!(tree.offset_to_line_col(30), None);
+        assert_eq!(tree.byte_to_line_col(30), None);
     }
 
     #[test]
@@ -1058,13 +1058,13 @@ mod tests_coordinates {
         let mut tree = PieceTree::new();
         tree.insert(0, "A\r\nB\nC\r\n");
 
-        assert_eq!(tree.line_to_offset(0), Some(0));
-        assert_eq!(tree.line_to_offset(1), Some(3));
-        assert_eq!(tree.line_to_offset(2), Some(5));
-        assert_eq!(tree.line_to_offset(3), Some(8));
+        assert_eq!(tree.line_to_byte(0), Some(0));
+        assert_eq!(tree.line_to_byte(1), Some(3));
+        assert_eq!(tree.line_to_byte(2), Some(5));
+        assert_eq!(tree.line_to_byte(3), Some(8));
 
-        assert_eq!(tree.offset_to_line_col(3), Some((1, 0)));
-        assert_eq!(tree.offset_to_line_col(5), Some((2, 0)));
+        assert_eq!(tree.byte_to_line_col(3), Some((1, 0)));
+        assert_eq!(tree.byte_to_line_col(5), Some((2, 0)));
     }
 }
 
@@ -1125,7 +1125,7 @@ mod tests_proptest_coordinates {
                 prop_assert_eq!(tree.byte_to_char(byte_idx_u32), Some(char_idx));
 
                 let expected_line_col = string_offset_to_line_col(&oracle, byte_idx);
-                let actual_line_col = tree.offset_to_line_col(byte_idx_u32).unwrap();
+                let actual_line_col = tree.byte_to_line_col(byte_idx_u32).unwrap();
 
                 prop_assert_eq!(
                     (actual_line_col.0 as usize, actual_line_col.1 as usize),
@@ -1137,7 +1137,7 @@ mod tests_proptest_coordinates {
             for line_idx in 0..total_lines {
                 let expected_byte_offset = string_line_to_byte_offset(&oracle, line_idx) as u32;
                 prop_assert_eq!(
-                    tree.line_to_offset(line_idx as u32),
+                    tree.line_to_byte(line_idx as u32),
                     Some(expected_byte_offset)
                 );
             }
@@ -1145,8 +1145,125 @@ mod tests_proptest_coordinates {
             // --- Explicit None / Out of Bounds Checks ---
             prop_assert_eq!(tree.char_to_byte(oracle.chars().count() as u32 + 1), None);
             prop_assert_eq!(tree.byte_to_char(oracle.len() as u32 + 1), None);
-            prop_assert_eq!(tree.line_to_offset(total_lines as u32), None);
-            prop_assert_eq!(tree.offset_to_line_col(oracle.len() as u32 + 1), None);
+            prop_assert_eq!(tree.line_to_byte(total_lines as u32), None);
+            prop_assert_eq!(tree.byte_to_line_col(oracle.len() as u32 + 1), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_undo_group_atomicity() {
+        let mut tree = PieceTree::new();
+        tree.insert(0, "Start"); // 1st undo entry: "Start"
+
+        // Perform a group of operations
+        tree.begin_undo_group(5);
+        tree.insert(5, " A");
+        tree.insert(7, " B");
+        tree.insert(9, " C");
+        tree.end_undo_group(); // Should have pushed exactly one entry for the whole sequence
+
+        // The state should now be "Start A B C"
+        assert_eq!(tree.to_string(), "Start A B C");
+
+        // Undo should revert all three insertions at once
+        tree.try_undo(0);
+        assert_eq!(tree.to_string(), "Start");
+
+        // Redo should bring all three back at once
+        tree.try_redo(0);
+        assert_eq!(tree.to_string(), "Start A B C");
+    }
+
+    #[test]
+    fn test_nested_undo_groups() {
+        let mut tree = PieceTree::new();
+        tree.insert(0, "Base");
+
+        tree.begin_undo_group(4);
+        tree.insert(4, "1");
+
+        // Start a nested group
+        tree.begin_undo_group(5);
+        tree.insert(5, "2");
+        tree.end_undo_group(); // Depth becomes 1
+
+        tree.insert(6, "3");
+        tree.end_undo_group(); // Depth becomes 0, commits the state
+
+        assert_eq!(tree.to_string(), "Base123");
+
+        // A single undo should revert everything added since the top-level begin
+        tree.try_undo(0);
+        assert_eq!(tree.to_string(), "Base");
+    }
+
+    #[test]
+    fn test_mixed_grouped_and_ungrouped() {
+        let mut tree = PieceTree::new();
+
+        // Ungrouped
+        tree.insert(0, "A"); // Undo 1
+        tree.insert(1, "B"); // Undo 2
+
+        // Grouped
+        tree.begin_undo_group(2);
+        tree.insert(2, "C");
+        tree.insert(3, "D");
+        tree.end_undo_group(); // Undo 3
+
+        assert_eq!(tree.to_string(), "ABCD");
+
+        // Undo the group
+        tree.try_undo(0);
+        assert_eq!(tree.to_string(), "AB");
+
+        // Undo the individual operations
+        tree.try_undo(0);
+        assert_eq!(tree.to_string(), "A");
+
+        tree.try_undo(0);
+        assert_eq!(tree.to_string(), "");
+    }
+
+    #[test]
+    fn test_redo_group_atomicity() {
+        let mut tree = PieceTree::new();
+        tree.insert(0, "A");
+
+        // Grouped changes
+        tree.begin_undo_group(1);
+        tree.insert(1, "B");
+        tree.insert(2, "C");
+        tree.end_undo_group();
+
+        // Undo the group
+        tree.try_undo(0);
+        assert_eq!(tree.to_string(), "A");
+
+        // Redo the group: should restore both 'B' and 'C' at once
+        tree.try_redo(0);
+        assert_eq!(tree.to_string(), "ABC");
+    }
+
+    #[test]
+    fn test_redo_history_clearing() {
+        let mut tree = PieceTree::new();
+        tree.insert(0, "A");
+        tree.insert(1, "B");
+
+        tree.try_undo(0); // Back to "A"
+        assert_eq!(tree.to_string(), "A");
+
+        // Crucial: Performing a NEW action after an undo must clear the redo stack
+        tree.insert(1, "C");
+        assert_eq!(tree.to_string(), "AC");
+
+        // Redo should now be empty because we branched the history
+        assert!(tree.try_redo(0).is_none());
     }
 }

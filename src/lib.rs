@@ -989,9 +989,6 @@ impl Pieces {
 
 #[derive(Default, Debug, Clone)]
 pub struct PieceTree {
-    pub pieces:  Pieces,
-    pub buffers: Buffers,
-
     //
     // `last_insert_end`      is the mod-buffer offset one past the last inserted byte.
     // `last_insert_tree_end` is the document   offset one past that insertion.
@@ -1003,8 +1000,14 @@ pub struct PieceTree {
 
     pub root: NodeRef,
 
+    /// Tracks nested undo groups. 0 if we are outside any group.
+    pub transaction_depth: usize,
+
     pub undo_stack: Vec<HistoryEntry>,
     pub redo_stack: Vec<HistoryEntry>,
+
+    pub pieces:  Pieces,
+    pub buffers: Buffers,
 
     pub scratch_index_map: Vec<u32>,
 }
@@ -1076,12 +1079,32 @@ impl PieceTree {
 
         tree
     }
+}
+
+impl PieceTree {
+    /// Starts a new undo group, saves the current state if this is the outermost group.
+    #[inline]
+    pub fn begin_undo_group(&mut self, cursor_offset: u32) {
+        if self.transaction_depth == 0 {
+            self.commit_head(cursor_offset);
+        }
+
+        self.transaction_depth += 1;
+    }
+
+    /// Ends the current undo group
+    #[inline]
+    pub fn end_undo_group(&mut self) {
+        if self.transaction_depth > 0 {
+            self.transaction_depth -= 1;
+        }
+    }
 
     #[inline(always)]
     pub fn commit_head(&mut self, cursor_offset: u32) {
         if let Some(last) = self.undo_stack.last() {
             if last.root == self.root {
-                return;  // Root hasn't changed; skip duplication
+                return;  // Root hasn't changed, skip duplication
             }
         }
 
@@ -1091,6 +1114,10 @@ impl PieceTree {
 
     #[inline(always)]
     pub fn try_undo(&mut self, current_cursor: u32) -> Option<u32> {
+        if self.transaction_depth > 0 {
+            return None;
+        }
+
         if let Some(entry) = self.undo_stack.pop() {
             self.last_tree_end = u32::MAX;
             self.last_mod_end  = u32::MAX;
@@ -1123,10 +1150,6 @@ impl PieceTree {
 
     #[inline(always)]
     #[must_use]
-    pub fn chars_rev(&self) -> ReverseTreeWalker<'_> { ReverseTreeWalker::new(self) }
-
-    #[inline(always)]
-    #[must_use]
     pub fn total_length(&self) -> u32 {
         self.pieces.get(self.root).subtree_len
     }
@@ -1135,15 +1158,17 @@ impl PieceTree {
     pub fn apply_edits(&mut self, primary_cursor_offset: u32, edits: &mut [Edit]) {
         if edits.is_empty() { return }
 
-        edits.sort_by_key(|b| core::cmp::Reverse(b.offset()));
-        self.commit_head(primary_cursor_offset);
+        self.begin_undo_group(primary_cursor_offset);
 
+        edits.sort_by_key(|b| core::cmp::Reverse(b.offset()));
         for edit in edits {
             match edit {
                 Edit::Insert { offset, text }   => self.insert_no_commit(*offset, text),
                 Edit::Remove { offset, length } => self.remove_no_commit(*offset, *length),
             }
         }
+
+        self.end_undo_group();
     }
 
     /// Inserts a single character at the specified logical byte offset.
@@ -1164,8 +1189,32 @@ impl PieceTree {
     pub fn insert(&mut self, offset: u32, text: &str) {
         if text.is_empty() { return }
 
-        self.commit_head(offset);
+        let auto_group = self.transaction_depth == 0;
+        if auto_group {
+            self.begin_undo_group(offset);
+        }
+
         self.insert_no_commit(offset, text);
+
+        if auto_group {
+            self.end_undo_group();
+        }
+    }
+
+    #[inline(always)]
+    pub fn remove_at(&mut self, offset: u32, length: u32) {
+        if length == 0 || self.root == NIL { return }
+
+        let auto_group = self.transaction_depth == 0;
+        if auto_group {
+            self.begin_undo_group(offset);
+        }
+
+        self.remove_no_commit(offset, length);
+
+        if auto_group {
+            self.end_undo_group();
+        }
     }
 
     pub fn insert_no_commit(&mut self, offset: u32, text: &str) {
@@ -1282,14 +1331,6 @@ impl PieceTree {
 
         self.last_mod_end  = new_mod_end;
         self.last_tree_end = new_tree_end;
-    }
-
-    #[inline(always)]
-    pub fn remove_at(&mut self, offset: u32, length: u32) {
-        if length == 0 || self.root == NIL { return }
-
-        self.commit_head(offset);
-        self.remove_no_commit(offset, length);
     }
 
     pub fn remove_no_commit(&mut self, offset: u32, mut length: u32) {
@@ -1781,8 +1822,8 @@ impl<'a> TreeSlice<'a> {
     #[inline(always)]
     #[must_use]
     pub fn byte_to_line(&self, byte_offset: u32) -> Option<u32> {
-        let (abs_line, _) = self.tree.offset_to_line_col(self.start + byte_offset)?;
-        let base_line     = self.tree.offset_to_line_col(self.start).map(|(l, _)| l)?;
+        let (abs_line, _) = self.tree.byte_to_line_col(self.start + byte_offset)?;
+        let base_line     = self.tree.byte_to_line_col(self.start).map(|(l, _)| l)?;
         Some(abs_line - base_line)
     }
 
@@ -1796,11 +1837,11 @@ impl<'a> TreeSlice<'a> {
     #[inline]
     #[must_use]
     pub fn abs_line_range(&self, rel_line: u32) -> Option<(u32, u32)> {
-        let base_line = self.tree.offset_to_line_col(self.start).map(|(l, _)| l)?;
+        let base_line = self.tree.byte_to_line_col(self.start).map(|(l, _)| l)?;
         let abs_line  = base_line + rel_line;
 
-        let line_start = self.tree.line_to_offset(abs_line)?;
-        let line_end   = self.tree.line_to_offset(abs_line + 1)
+        let line_start = self.tree.line_to_byte(abs_line)?;
+        let line_end   = self.tree.line_to_byte(abs_line + 1)
             .unwrap_or_else(|| self.tree.len_bytes());
 
         //
@@ -1895,7 +1936,7 @@ impl PieceTree {
 
     #[inline]
     #[must_use]
-    pub fn line_to_offset(&self, target_line: u32) -> Option<u32> {
+    pub fn line_to_byte(&self, target_line: u32) -> Option<u32> {
         if target_line == 0 { return Some(0) }
         let mut current = self.root;
         let mut current_offset = 0;
@@ -2037,7 +2078,7 @@ impl PieceTree {
 
     #[inline]
     #[must_use]
-    pub fn offset_to_line_col(&self, offset: u32) -> Option<(u32, u32)> {
+    pub fn byte_to_line_col(&self, offset: u32) -> Option<(u32, u32)> {
         let total_bytes = self.len_bytes();
         if offset > total_bytes { return None }
         if offset == total_bytes {
@@ -2045,7 +2086,7 @@ impl PieceTree {
             // Get offset of the last line
             //
             let line            = self.pieces.get(self.root).subtree_newlines;
-            let line_start_byte = self.line_to_offset(line).unwrap_or(0);
+            let line_start_byte = self.line_to_byte(line).unwrap_or(0);
             let target_char     = self.len_chars();
             let line_start_char = self.byte_to_char(line_start_byte)?;
             return Some((line, target_char - line_start_char));
@@ -2079,7 +2120,7 @@ impl PieceTree {
                     let rel_char    = target_char - p.piece_start_char;
                     let abs_char    = current_char + rel_char;
 
-                    let line_start_byte = self.line_to_offset(current_line)?;
+                    let line_start_byte = self.line_to_byte(current_line)?;
                     let line_start_char = self.byte_to_char(line_start_byte)?;
 
                     (0, abs_char - line_start_char)
@@ -2098,7 +2139,7 @@ impl PieceTree {
                         let last_nl_char     = self.buffers.byte_to_char_absolute(p.buffer, last_nl_abs_byte);
                         target_char - (last_nl_char + 1)
                     } else {
-                        let line_start_byte = self.line_to_offset(current_line)?;
+                        let line_start_byte = self.line_to_byte(current_line)?;
                         let line_start_char = self.byte_to_char(line_start_byte)?;
                         let rel_char        = target_char - p.piece_start_char;
                         (current_char + rel_char) - line_start_char
@@ -2129,8 +2170,8 @@ impl PieceTree {
     #[inline]
     #[must_use]
     pub fn get_line_range(&self, line: u32) -> Option<(u32, u32)> {
-        let start = self.line_to_offset(line)?;
-        let end = self.line_to_offset(line + 1).unwrap_or_else(|| self.total_length());
+        let start = self.line_to_byte(line)?;
+        let end = self.line_to_byte(line + 1).unwrap_or_else(|| self.total_length());
         Some((start, end))
     }
 
@@ -2213,8 +2254,8 @@ impl PieceTree {
     #[inline]
     #[must_use]
     pub fn line(&self, line: u32) -> Option<ChunkIter<'_>> {
-        let start = self.line_to_offset(line)?;
-        let end   = self.line_to_offset(line + 1)
+        let start = self.line_to_byte(line)?;
+        let end   = self.line_to_byte(line + 1)
                         .unwrap_or_else(|| self.total_length());
         Some(self.chunks_at_byte(start, end))
     }
@@ -2235,6 +2276,10 @@ impl PieceTree {
     #[inline]
     #[must_use]
     pub fn chars(&self) -> TreeWalker<'_> { TreeWalker::new(self) }
+
+    #[inline(always)]
+    #[must_use]
+    pub fn chars_rev(&self) -> ReverseTreeWalker<'_> { ReverseTreeWalker::new(self) }
 
     #[inline]
     #[must_use]
@@ -2261,20 +2306,21 @@ impl PieceTree {
     #[must_use]
     pub fn char_to_line(&self, char_index: u32) -> Option<u32> {
         let byte_index = self.char_to_byte(char_index)?;
-        self.offset_to_line_col(byte_index).map(|(line, _)| line)
+        self.byte_to_line_col(byte_index).map(|(line, _)| line)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn char_to_line_col(&self, char_index: u32) -> Option<(u32, u32)> {
+        let byte_index = self.char_to_byte(char_index)?;
+        self.byte_to_line_col(byte_index)
     }
 
     #[inline]
     #[must_use]
     pub fn line_to_char(&self, line: u32) -> Option<u32> {
-        let byte_index = self.line_to_offset(line)?;
+        let byte_index = self.line_to_byte(line)?;
         self.byte_to_char(byte_index)
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn line_to_byte(&self, line: u32) -> Option<u32> {
-        self.line_to_offset(line)
     }
 }
 
@@ -2758,7 +2804,7 @@ pub fn assert_coordinates(tree: &PieceTree, oracle: &str) {
 
         let expected_lc = oracle_offset_to_line_col(oracle, byte_index as usize);
         assert_eq!(
-            tree.offset_to_line_col(byte_index),
+            tree.byte_to_line_col(byte_index),
             Some((expected_lc.0 as u32, expected_lc.1 as u32)),
             "offset_to_line_col({}) wrong", byte_index
         );
@@ -2799,7 +2845,7 @@ pub fn assert_coordinates(tree: &PieceTree, oracle: &str) {
     assert_eq!(tree.byte_to_char(total_bytes), Some(total_chars));
     assert_eq!(tree.char_to_byte(total_chars + 1), None);
     assert_eq!(tree.byte_to_char(total_bytes + 1), None);
-    assert_eq!(tree.offset_to_line_col(total_bytes + 1), None);
+    assert_eq!(tree.byte_to_line_col(total_bytes + 1), None);
 
     //
     // line_to_offset: check first, last, middle line only
@@ -2807,9 +2853,9 @@ pub fn assert_coordinates(tree: &PieceTree, oracle: &str) {
     let total_lines = oracle.chars().filter(|&c| c == '\n').count() + 1;
     for line in [0, total_lines / 2, total_lines.saturating_sub(1)] {
         let expected = oracle_line_to_offset(oracle, line) as u32;
-        assert_eq!(tree.line_to_offset(line as u32), Some(expected),
+        assert_eq!(tree.line_to_byte(line as u32), Some(expected),
             "line_to_offset({}) wrong", line);
     }
 
-    assert_eq!(tree.line_to_offset(total_lines as u32), None);
+    assert_eq!(tree.line_to_byte(total_lines as u32), None);
 }
