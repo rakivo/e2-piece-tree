@@ -1,3 +1,5 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use std::arch::x86_64::{
     __m256i, _mm256_and_si256, _mm256_cmpeq_epi8, _mm256_extract_epi64, _mm256_loadu_si256,
     _mm256_sad_epu8, _mm256_set1_epi8, _mm256_setzero_si256, _mm256_sub_epi8, _mm256_xor_si256,

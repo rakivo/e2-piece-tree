@@ -21,10 +21,10 @@ repository = "https://github.com/rakivo/e2-piece-tree"
 readme = "README.md"
 
 [features]
-default = ["write"]
+default = ["write", "runtime-dispatch-simd"]
 
 no_std = []
-no_std_nightly_simd = ["runtime-dispatch-simd"]
+no_std_nightly_simd = ["generic-simd"]
 
 write = []
 
@@ -45,7 +45,7 @@ criterion = "0.5"
 fastrand  = "2.4.1"
 
 [[bench]]
-name = "piece_tree_bench"
+name = "create"
 harness = false
 
 [[bench]]
@@ -54,4 +54,8 @@ harness = false
 
 [[bench]]
 name = "remove"
+harness = false
+
+[[bench]]
+name = "queries"
 harness = false

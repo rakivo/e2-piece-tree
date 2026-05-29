@@ -1073,41 +1073,61 @@ mod tests_proptest_coordinates {
     use super::*;
     use proptest::prelude::*;
 
-    // (Assume string_offset_to_line_col and string_line_to_byte_offset from previous message)
-    fn string_offset_to_line_col(s: &str, byte_offset: usize) -> (usize, usize) {
-        let slice = &s[..byte_offset];
-        let line = slice.chars().filter(|&c| c == '\n').count();
-        let last_newline_byte = slice.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let col = s[last_newline_byte..byte_offset].chars().count();
-        (line, col)
+    fn oracle_byte_to_char(s: &str, byte_idx: usize) -> Option<usize> {
+        if byte_idx > s.len() || !s.is_char_boundary(byte_idx) { return None; }
+        Some(s[..byte_idx].chars().count())
     }
 
-    fn string_line_to_byte_offset(s: &str, target_line: usize) -> usize {
-        if target_line == 0 { return 0; }
-        let mut current_line = 0;
+    fn oracle_char_to_byte(s: &str, char_idx: usize) -> Option<usize> {
+        s.char_indices().nth(char_idx).map(|(i, _)| i)
+            .or_else(|| if char_idx == s.chars().count() { Some(s.len()) } else { None })
+    }
+
+    fn oracle_byte_to_line(s: &str, byte_idx: usize) -> Option<usize> {
+        if byte_idx > s.len() { return None; }
+        Some(s[..byte_idx].chars().filter(|&c| c == '\n').count())
+    }
+
+    fn oracle_line_to_byte(s: &str, line_idx: usize) -> Option<usize> {
+        if line_idx == 0 { return Some(0); }
+        let mut lines_seen = 0;
         for (i, c) in s.char_indices() {
             if c == '\n' {
-                current_line += 1;
-                if current_line == target_line {
-                    return i + 1; // skip the \n itself
-                }
+                lines_seen += 1;
+                if lines_seen == line_idx { return Some(i + 1); }
             }
         }
-        s.len()
+        None
+    }
+
+    fn oracle_line_break_to_byte(s: &str, break_idx: usize) -> Option<usize> {
+        let mut breaks_seen = 0;
+        for (i, c) in s.char_indices() {
+            if c == '\n' {
+                if breaks_seen == break_idx { return Some(i); }
+                breaks_seen += 1;
+            }
+        }
+        None
     }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(5_000))]
         #[test]
-        fn piece_tree_coordinates_match_string_oracle(
-            chunks in prop::collection::vec("[a-zA-Z0-9 \n\r\t🦀🌎Привет]{1,15}", 1..50)
+        fn piece_tree_comprehensive_oracle(
+            chunks in prop::collection::vec("[a-zA-Z0-9 \n\r\t🦀🌎Привет]{1,15}", 1..50),
+            // Random slice bounds (values between 0.0 and 1.0 to pick percentages of tree length)
+            slice_start_pct in 0.0f64..1.0f64,
+            slice_end_pct in 0.0f64..1.0f64,
         ) {
             let mut tree = PieceTree::new();
             let mut oracle = String::new();
 
+            //
+            // Build the Tree and Oracle
+            //
             for chunk in chunks {
                 let insert_pos = if tree.len_bytes() == 0 { 0 } else { tree.char_to_byte(tree.len_chars() / 2).unwrap() };
-
                 let mut safe_insert_byte = insert_pos;
                 while safe_insert_byte > 0 && !oracle.is_char_boundary(safe_insert_byte as usize) {
                     safe_insert_byte -= 1;
@@ -1117,36 +1137,192 @@ mod tests_proptest_coordinates {
                 oracle.insert_str(safe_insert_byte as usize, &chunk);
             }
 
-            for (byte_idx, _) in oracle.char_indices() {
-                let char_idx = oracle[..byte_idx].chars().count() as u32;
-                let byte_idx_u32 = byte_idx as u32;
-
-                prop_assert_eq!(tree.char_to_byte(char_idx), Some(byte_idx_u32));
-                prop_assert_eq!(tree.byte_to_char(byte_idx_u32), Some(char_idx));
-
-                let expected_line_col = string_offset_to_line_col(&oracle, byte_idx);
-                let actual_line_col = tree.byte_to_line_col(byte_idx_u32).unwrap();
-
-                prop_assert_eq!(
-                    (actual_line_col.0 as usize, actual_line_col.1 as usize),
-                    expected_line_col
-                );
-            }
-
+            let total_chars = oracle.chars().count();
+            let total_bytes = oracle.len();
             let total_lines = oracle.chars().filter(|&c| c == '\n').count() + 1;
-            for line_idx in 0..total_lines {
-                let expected_byte_offset = string_line_to_byte_offset(&oracle, line_idx) as u32;
-                prop_assert_eq!(
-                    tree.line_to_byte(line_idx as u32),
-                    Some(expected_byte_offset)
-                );
+            let total_breaks = total_lines - 1;
+
+            //
+            // Base Tree Checks (Coordinates & Content)
+            //
+            for (byte_idx, c) in oracle.char_indices() {
+                let char_idx = oracle_byte_to_char(&oracle, byte_idx).unwrap();
+                let byte_idx_u32 = byte_idx as u32;
+                let char_idx_u32 = char_idx as u32;
+
+                // Coordinate Mappings
+                prop_assert_eq!(tree.char_to_byte(char_idx_u32), Some(byte_idx_u32));
+                prop_assert_eq!(tree.byte_to_char(byte_idx_u32), Some(char_idx_u32));
+
+                // Assuming tree.char_to_line / line_to_char are composition methods:
+                let expected_line = oracle_byte_to_line(&oracle, byte_idx).unwrap() as u32;
+                prop_assert_eq!(tree.byte_to_line(byte_idx_u32), Some(expected_line));
+                prop_assert_eq!(tree.char_to_line(char_idx_u32), Some(expected_line));
+
+                // Content Retrieval
+                prop_assert_eq!(tree.byte(byte_idx_u32), Some(oracle.as_bytes()[byte_idx]));
+                prop_assert_eq!(tree.char(char_idx_u32), Some(c));
+
+                // Chunk Retrieval
+                let chunk_byte = tree.chunk_at_byte(byte_idx_u32);
+                prop_assert!(!chunk_byte.is_empty());
+                prop_assert!(oracle[byte_idx..].as_bytes().starts_with(chunk_byte));
+
+                let chunk_char = tree.chunk_at_char(char_idx_u32);
+                prop_assert_eq!(chunk_char, chunk_byte);
             }
 
-            // --- Explicit None / Out of Bounds Checks ---
-            prop_assert_eq!(tree.char_to_byte(oracle.chars().count() as u32 + 1), None);
-            prop_assert_eq!(tree.byte_to_char(oracle.len() as u32 + 1), None);
+            // Line and Line-Break Iteration
+            for line_idx in 0..total_lines {
+                let expected_byte = oracle_line_to_byte(&oracle, line_idx).unwrap() as u32;
+                prop_assert_eq!(tree.line_to_byte(line_idx as u32), Some(expected_byte));
+
+                let expected_char = oracle_byte_to_char(&oracle, expected_byte as usize).unwrap() as u32;
+                prop_assert_eq!(tree.line_to_char(line_idx as u32), Some(expected_char));
+
+                if line_idx < total_breaks {
+                    let break_byte = oracle_line_break_to_byte(&oracle, line_idx).unwrap();
+                    let chunk_break = tree.chunk_at_line_break(line_idx as u32);
+                    prop_assert!(!chunk_break.is_empty());
+                    prop_assert!(oracle[break_byte..].as_bytes().starts_with(chunk_break));
+                }
+            }
+
+            //
+            // View Slices (Whole, Sub-Slice, Nested Slices)
+            //
+            // Whole Tree Slice
+            let whole_slice = tree.slice(0..total_bytes as u32);
+            prop_assert_eq!(whole_slice.len_bytes(), total_bytes as u32);
+            prop_assert_eq!(whole_slice.len_chars(), total_chars as u32);
+
+            // Random Valid Sub-Slice Boundaries
+            let mut raw_start = (total_chars as f64 * slice_start_pct) as usize;
+            let mut raw_end = (total_chars as f64 * slice_end_pct) as usize;
+            if raw_start > raw_end { std::mem::swap(&mut raw_start, &mut raw_end); }
+
+            let s_byte = oracle_char_to_byte(&oracle, raw_start).unwrap();
+            let e_byte = oracle_char_to_byte(&oracle, raw_end).unwrap();
+            let oracle_slice = &oracle[s_byte..e_byte];
+
+            let sub_slice = tree.slice(s_byte as u32 .. e_byte as u32);
+
+            // Nested Slice (Slice of a Slice)
+            let nested_slice = sub_slice.slice(0..sub_slice.len_bytes());
+            prop_assert_eq!(nested_slice.len_bytes(), sub_slice.len_bytes());
+
+            //
+            // Slice Checks (Coordinate & Chunk inside slice)
+            //
+            prop_assert_eq!(sub_slice.len_bytes(), oracle_slice.len() as u32);
+            prop_assert_eq!(sub_slice.len_chars(), oracle_slice.chars().count() as u32);
+
+            let slice_lines = oracle_slice.chars().filter(|&c| c == '\n').count() + 1;
+            prop_assert_eq!(sub_slice.len_lines(), slice_lines as u32);
+
+            for (rel_byte_idx, c) in oracle_slice.char_indices() {
+                let rel_char_idx = oracle_byte_to_char(oracle_slice, rel_byte_idx).unwrap() as u32;
+                let rel_byte_u32 = rel_byte_idx as u32;
+
+                // Slice Mappings
+                prop_assert_eq!(sub_slice.char_to_byte(rel_char_idx), Some(rel_byte_u32));
+                prop_assert_eq!(sub_slice.byte_to_char(rel_byte_u32), Some(rel_char_idx));
+
+                // Slice Content
+                prop_assert_eq!(sub_slice.char(rel_char_idx), Some(c));
+
+                // Slice Chunks (Checking they don't overrun slice bounds unexpectedly)
+                let chunk_byte_slice = sub_slice.chunk_at_byte(rel_byte_u32);
+                prop_assert!(!chunk_byte_slice.is_empty());
+                prop_assert!(oracle_slice[rel_byte_idx..].as_bytes().starts_with(chunk_byte_slice));
+
+                let chunk_char_slice = sub_slice.chunk_at_char(rel_char_idx);
+                prop_assert_eq!(chunk_char_slice, chunk_byte_slice);
+            }
+
+            // Slice Line Breaks
+            for break_idx in 0..(slice_lines - 1) {
+                let rel_break_byte = oracle_line_break_to_byte(oracle_slice, break_idx).unwrap();
+                let chunk_break_slice = sub_slice.chunk_at_line_break(break_idx as u32);
+
+                prop_assert!(!chunk_break_slice.is_empty());
+                prop_assert!(oracle_slice[rel_break_byte..].as_bytes().starts_with(chunk_break_slice));
+            }
+
+            //
+            // Explicit Out-of-Bounds Checks
+            //
+            prop_assert_eq!(tree.char_to_byte(total_chars as u32 + 1), None);
+            prop_assert_eq!(tree.byte_to_char(total_bytes as u32 + 1), None);
             prop_assert_eq!(tree.line_to_byte(total_lines as u32), None);
-            prop_assert_eq!(tree.byte_to_line_col(oracle.len() as u32 + 1), None);
+            prop_assert_eq!(tree.byte_to_line(total_bytes as u32 + 1), None);
+            prop_assert_eq!(tree.byte(total_bytes as u32), None);
+            prop_assert_eq!(tree.char(total_chars as u32), None);
+
+            prop_assert_eq!(sub_slice.byte(sub_slice.len_bytes()), None);
+            prop_assert_eq!(sub_slice.char(sub_slice.len_chars()), None);
+
+            //
+            // Iterators & String Representation (TreeSlice)
+            //
+            // The Display trait relies on `chars()`, so this implicitly tests both.
+            prop_assert_eq!(sub_slice.to_string(), oracle_slice);
+
+            // chars() iterator exhaustive collection
+            let collected_chars: String = sub_slice.chars().collect();
+            prop_assert_eq!(&collected_chars, oracle_slice);
+
+            // chunks() iterator reconstruction
+            let mut collected_chunks = String::new();
+            for chunk in sub_slice.chunks() {
+                // Note: In real-world ropes, chunks might end mid-multi-byte char.
+                // If your tree strictly boundaries chunks on chars, from_utf8 is safe.
+                // Otherwise, use String::from_utf8_lossy(chunk) for the proptest.
+                collected_chunks.push_str(chunk);
+            }
+            prop_assert_eq!(&collected_chunks, oracle_slice);
+
+            // line() iterative reconstruction
+            // Using `split_inclusive('\n')` perfectly mimics Ropey's line definition
+            // (where lines retain their terminating newline).
+            let oracle_lines: Vec<&str> = if oracle_slice.is_empty() {
+                vec![""] // An empty string still technically has 1 empty line
+            } else {
+                oracle_slice.split_inclusive('\n').collect()
+            };
+
+            for (line_idx, expected_line) in oracle_lines.into_iter().enumerate() {
+                let mut line_str = String::new();
+                if let Some(chunk_iter) = sub_slice.line(line_idx as u32) {
+                    for chunk in chunk_iter {
+                        line_str.push_str(chunk);
+                    }
+                }
+                prop_assert_eq!(&line_str, expected_line, "Line {} mismatch", line_idx);
+            }
+
+            //
+            // Local Line/Byte Coordinate Translations
+            //
+            for line_idx in 0..(slice_lines as u32) {
+                // 1. Convert local line -> local byte
+                let local_byte = sub_slice.line_to_byte(line_idx);
+                prop_assert!(local_byte.is_some());
+                let local_byte_val = local_byte.unwrap();
+
+                // 2. Round-trip: Convert local byte back to local line
+                prop_assert_eq!(sub_slice.byte_to_line(local_byte_val), Some(line_idx));
+
+                // 3. Compare with oracle
+                let expected_oracle_byte = oracle_line_to_byte(oracle_slice, line_idx as usize).unwrap() as u32;
+                prop_assert_eq!(local_byte_val, expected_oracle_byte);
+            }
+
+            //
+            // Explicit Iteration/Coordinate Out-of-Bounds
+            //
+            prop_assert!(sub_slice.line(slice_lines as u32).is_none());
+            prop_assert_eq!(sub_slice.line_to_byte(slice_lines as u32), None);
         }
     }
 }
