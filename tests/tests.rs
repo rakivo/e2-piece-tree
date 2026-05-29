@@ -993,3 +993,160 @@ mod tests_edit_merging {
         assert_eq!(tree.pieces().count(), 1);
     }
 }
+
+#[cfg(test)]
+mod tests_coordinates {
+    use super::*;
+
+    #[test]
+    fn test_exact_coordinate_mapping() {
+        let mut tree = PieceTree::new();
+
+        // Corpus: 20 chars, 29 bytes.
+        tree.insert(0, "Hello\n🦀world\r\nПривет");
+
+        // --- char_to_byte & byte_to_char ---
+        assert_eq!(tree.char_to_byte(0), Some(0));
+        assert_eq!(tree.byte_to_char(0), Some(0));
+
+        // '🦀' start
+        assert_eq!(tree.char_to_byte(6), Some(6));
+        assert_eq!(tree.byte_to_char(6), Some(6));
+
+        // 'w' after 🦀
+        assert_eq!(tree.char_to_byte(7), Some(10));
+        assert_eq!(tree.byte_to_char(10), Some(7));
+
+        // EOF
+        assert_eq!(tree.char_to_byte(20), Some(29));
+        assert_eq!(tree.byte_to_char(29), Some(20));
+
+        // Out of bounds
+        assert_eq!(tree.char_to_byte(21), None);
+        assert_eq!(tree.byte_to_char(30), None);
+
+        // --- line_to_offset ---
+        assert_eq!(tree.line_to_offset(0), Some(0));
+        assert_eq!(tree.line_to_offset(1), Some(6));
+        assert_eq!(tree.line_to_offset(2), Some(17));
+
+        // Out of bounds line
+        assert_eq!(tree.line_to_offset(3), None);
+
+        // --- offset_to_line_col ---
+        assert_eq!(tree.offset_to_line_col(0), Some((0, 0)));
+        assert_eq!(tree.offset_to_line_col(5), Some((0, 5)));
+
+        // '🦀' on line 1
+        assert_eq!(tree.offset_to_line_col(6), Some((1, 0)));
+
+        // 'w' on line 1
+        assert_eq!(tree.offset_to_line_col(10), Some((1, 1)));
+
+        // 'П' on line 2
+        assert_eq!(tree.offset_to_line_col(17), Some((2, 0)));
+
+        // EOF
+        assert_eq!(tree.offset_to_line_col(29), Some((2, 6)));
+
+        // Out of bounds offset
+        assert_eq!(tree.offset_to_line_col(30), None);
+    }
+
+    #[test]
+    fn test_crlf_vs_lf_line_endings() {
+        let mut tree = PieceTree::new();
+        tree.insert(0, "A\r\nB\nC\r\n");
+
+        assert_eq!(tree.line_to_offset(0), Some(0));
+        assert_eq!(tree.line_to_offset(1), Some(3));
+        assert_eq!(tree.line_to_offset(2), Some(5));
+        assert_eq!(tree.line_to_offset(3), Some(8));
+
+        assert_eq!(tree.offset_to_line_col(3), Some((1, 0)));
+        assert_eq!(tree.offset_to_line_col(5), Some((2, 0)));
+    }
+}
+
+#[cfg(test)]
+mod tests_proptest_coordinates {
+    use super::*;
+    use proptest::prelude::*;
+
+    // (Assume string_offset_to_line_col and string_line_to_byte_offset from previous message)
+    fn string_offset_to_line_col(s: &str, byte_offset: usize) -> (usize, usize) {
+        let slice = &s[..byte_offset];
+        let line = slice.chars().filter(|&c| c == '\n').count();
+        let last_newline_byte = slice.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let col = s[last_newline_byte..byte_offset].chars().count();
+        (line, col)
+    }
+
+    fn string_line_to_byte_offset(s: &str, target_line: usize) -> usize {
+        if target_line == 0 { return 0; }
+        let mut current_line = 0;
+        for (i, c) in s.char_indices() {
+            if c == '\n' {
+                current_line += 1;
+                if current_line == target_line {
+                    return i + 1; // skip the \n itself
+                }
+            }
+        }
+        s.len()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(5_000))]
+        #[test]
+        fn piece_tree_coordinates_match_string_oracle(
+            chunks in prop::collection::vec("[a-zA-Z0-9 \n\r\t🦀🌎Привет]{1,15}", 1..50)
+        ) {
+            let mut tree = PieceTree::new();
+            let mut oracle = String::new();
+
+            for chunk in chunks {
+                let insert_pos = if tree.len_bytes() == 0 { 0 } else { tree.char_to_byte(tree.len_chars() / 2).unwrap() };
+
+                let mut safe_insert_byte = insert_pos;
+                while safe_insert_byte > 0 && !oracle.is_char_boundary(safe_insert_byte as usize) {
+                    safe_insert_byte -= 1;
+                }
+
+                tree.insert(safe_insert_byte, &chunk);
+                oracle.insert_str(safe_insert_byte as usize, &chunk);
+            }
+
+            for (byte_idx, _) in oracle.char_indices() {
+                let char_idx = oracle[..byte_idx].chars().count() as u32;
+                let byte_idx_u32 = byte_idx as u32;
+
+                prop_assert_eq!(tree.char_to_byte(char_idx), Some(byte_idx_u32));
+                prop_assert_eq!(tree.byte_to_char(byte_idx_u32), Some(char_idx));
+
+                let expected_line_col = string_offset_to_line_col(&oracle, byte_idx);
+                let actual_line_col = tree.offset_to_line_col(byte_idx_u32).unwrap();
+
+                prop_assert_eq!(
+                    (actual_line_col.0 as usize, actual_line_col.1 as usize),
+                    expected_line_col
+                );
+            }
+
+            let total_lines = oracle.chars().filter(|&c| c == '\n').count() + 1;
+            for line_idx in 0..total_lines {
+                let expected_byte_offset = string_line_to_byte_offset(&oracle, line_idx) as u32;
+                prop_assert_eq!(
+                    tree.line_to_offset(line_idx as u32),
+                    Some(expected_byte_offset)
+                );
+            }
+
+            // --- Explicit None / Out of Bounds Checks ---
+            prop_assert_eq!(tree.char_to_byte(oracle.chars().count() as u32 + 1), None);
+            prop_assert_eq!(tree.byte_to_char(oracle.len() as u32 + 1), None);
+            prop_assert_eq!(tree.line_to_offset(total_lines as u32), None);
+            prop_assert_eq!(tree.offset_to_line_col(oracle.len() as u32 + 1), None);
+        }
+    }
+}

@@ -4,7 +4,7 @@ use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 
 use piece_tree::PieceTree;
-use piece_tree::{assert_no_mergeable_neighbors, assert_piece_metadata, assert_invariants, assert_state};
+use piece_tree::{assert_no_mergeable_neighbors, assert_piece_metadata, assert_invariants, assert_state, assert_coordinates};
 
 #[derive(Arbitrary, Debug)]
 enum Action {
@@ -143,6 +143,7 @@ fuzz_target!(|actions: Vec<Action>| {
         assert_invariants(&tree);
         assert_piece_metadata(&tree);
         assert_no_mergeable_neighbors(&tree);
+        assert_coordinates(&tree, &model.text);
     }
 });
 

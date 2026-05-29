@@ -4,18 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = ["write"]
+
+no_std = []
+no_std_nightly_simd = ["runtime-dispatch-simd"]
+
 write = []
 
 runtime-dispatch-simd = ["bytecount/runtime-dispatch-simd"]
 generic-simd = ["bytecount/generic-simd"]
 
 [dependencies]
-rand      = "0.8"
 bytecount        = { version = "=0.6.9",   default-features = false }
 cranelift-entity = { version = "=0.132.0", default-features = false }
 smallvec         = { version = "=1.15.1",  default-features = false, features = ["const_generics"] }
 
 [dev-dependencies]
+rand = "0.8"
 proptest  = "1.4"
 criterion = "0.5"
 fastrand  = "2.4.1"
@@ -26,6 +31,10 @@ harness = false
 
 [[bench]]
 name = "insert"
+harness = false
+
+[[bench]]
+name = "remove"
 harness = false
 
 [profile.release-fast]

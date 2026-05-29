@@ -51,17 +51,19 @@ use core::ops::{Bound, Deref, RangeBounds};
 use smallvec::SmallVec;
 use cranelift_entity::{EntityRef, PrimaryMap};
 
-pub const MOD_BUFFER_INDEX: u32 = u32::MAX >> 1;
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct BufferRef(pub u32);
+cranelift_entity::entity_impl!(BufferRef);
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct NodeRef(pub u32);
-
-impl EntityRef for NodeRef {
-    #[inline(always)] fn new(index: usize) -> Self { Self(index as u32) }
-    #[inline(always)] fn index(self)       -> usize { self.0 as usize }
-}
+cranelift_entity::entity_impl!(NodeRef);
 
 pub const NIL: NodeRef = NodeRef(0);
+
+pub const MOD_BUFFER: BufferRef = BufferRef(u32::MAX >> 1);
+
+pub const CHECKPOINT_INTERVAL: u32 = 64;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Color { Black = 0, Red = 1 }
@@ -74,12 +76,17 @@ pub struct HistoryEntry {
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Piece {
-    pub buffer_index:  u32,
-    pub offset:        u32,
-    pub length:        u32,
+    pub buffer:  BufferRef,
+
+    pub byte_offset:   u32,      // Byte offset in `buffer
+    pub byte_length:   u32,
+
     pub newline_count: u32,
     pub char_count:    u32,
-    pub buffer_start_line: u32,
+
+    pub buffer_start_line: u32,  // Index into that buffer's `newline_offsets` array of this piece's first '\n'
+
+    pub piece_start_char:  u32,  // Absolute char index of p.offset in its buffer
 }
 
 // For tests and other stuff
@@ -111,9 +118,10 @@ pub struct Node {
     pub subtree_newlines: u32,  // 4 bytes
     pub meta: u32,              // 4 bytes (Bit 0: Color, Bits 1..31: BufferIndex)
     pub buffer_start_line: u32, // 4 bytes
+    pub piece_start_char:  u32, // 4 bytes
 }
 
-const _: () = assert!(size_of::<Node>() == 32);
+const _: () = assert!(size_of::<Node>() == 36);
 
 impl Node {
     #[inline(always)]
@@ -129,20 +137,21 @@ impl Node {
 
     #[inline(always)]
     #[must_use]
-    pub fn buffer_index(&self) -> u32 {
-        self.meta >> 1
+    pub fn buffer_index(&self) -> BufferRef {
+        BufferRef(self.meta >> 1)
     }
 
     #[inline(always)]
-    pub fn set_buffer_index(&mut self, index: u32) {
-        self.meta = (index << 1) | (self.meta & 1);
+    pub fn set_buffer(&mut self, buffer: BufferRef) {
+        self.meta = (buffer.as_u32() << 1) | (self.meta & 1);
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Buffer {
-    pub text: Arc<str>,
-    pub newline_offsets: Arc<[u32]>,
+    pub text:             Arc<str>,
+    pub newline_offsets:  Arc<[u32]>,
+    pub char_checkpoints: Arc<[(u32, u32)]>,
 }
 
 impl Deref for Buffer {
@@ -156,17 +165,20 @@ impl Deref for Buffer {
 
 #[derive(Debug, Clone)]
 pub struct Buffers {
-    pub original_buffers: Vec<Buffer>,
-    pub modifications_buffer: String,
-    pub modifications_newline_offsets: Vec<u32>,
+    pub original_buffers: PrimaryMap<BufferRef, Buffer>,
+
+    pub modifications_buffer:           String,
+    pub modifications_newline_offsets:  Vec<u32>,
+    pub modifications_char_checkpoints: Vec<(u32, u32)>,
 }
 
 impl Default for Buffers {
     #[inline(always)]
     fn default() -> Self {
         Self {
-            original_buffers: Vec::new(),
+            original_buffers: PrimaryMap::new(),
             modifications_newline_offsets: Vec::with_capacity(1024),
+            modifications_char_checkpoints: Vec::with_capacity(128),
             modifications_buffer: String::with_capacity(1024 * 64),
         }
     }
@@ -185,6 +197,34 @@ pub fn count_chars_and_newlines(bytes: &[u8]) -> (u32, u32) {
     (chars, newlines)
 }
 
+#[must_use]
+#[inline(always)]
+pub fn count_chars_and_newlines_with_offsets_and_checkpoints(
+    bytes: &[u8],
+    offsets: &mut Vec<u32>,
+    checkpoints: &mut Vec<(u32, u32)>,
+) -> (u32, u32) {
+    let mut chars    = 0u32;
+    let mut newlines = 0u32;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b < 0x80 || b >= 0xC0 {
+            if chars % CHECKPOINT_INTERVAL == 0 && chars > 0 {
+                checkpoints.push((chars, i as u32));
+            }
+
+            chars += 1
+        }
+
+        if b == b'\n' {
+            offsets.push(i as u32);
+
+            newlines += 1
+        }
+    }
+
+    (chars, newlines)
+}
+
 impl Buffers {
     #[inline(always)]
     #[must_use]
@@ -192,22 +232,18 @@ impl Buffers {
 
     #[inline(always)]
     #[must_use]
-    pub fn get(&self, index: u32) -> &str {
-        if index == MOD_BUFFER_INDEX {
+    pub fn get(&self, buffer: BufferRef) -> &str {
+        if buffer == MOD_BUFFER {
             &self.modifications_buffer
         } else {
-            unsafe { self.original_buffers.get_unchecked(index as usize) }
+            &self.original_buffers[buffer]
         }
     }
 
     #[inline(always)]
     #[must_use]
-    pub fn get_slice(&self, index: u32, offset: u32, len: u32) -> &str {
-        let buf: &str = if index == MOD_BUFFER_INDEX {
-            &self.modifications_buffer
-        } else {
-            unsafe { self.original_buffers.get_unchecked(index as usize) }.as_ref()
-        };
+    pub fn get_slice(&self, buffer: BufferRef, offset: u32, len: u32) -> &str {
+        let buf = self.get(buffer);
         let start = offset as usize;
         let end = start + len as usize;
         unsafe { str::from_utf8_unchecked(buf.as_bytes().get_unchecked(start..end)) }
@@ -215,20 +251,95 @@ impl Buffers {
 
     #[must_use]
     #[inline(always)]
-    pub fn count_chars_and_newlines(&self, index: u32, offset: u32, len: u32) -> (u32, u32) {
-        count_chars_and_newlines(self.get_slice(index, offset, len).as_bytes())
+    pub fn count_chars_and_newlines(&self, buffer: BufferRef, offset: u32, len: u32) -> (u32, u32) {
+        count_chars_and_newlines(self.get_slice(buffer, offset, len).as_bytes())
     }
 
     #[inline(always)]
     #[must_use]
-    pub fn count_chars(&self, index: u32, offset: u32, len: u32) -> u32 {
-        bytecount::num_chars(self.get_slice(index, offset, len).as_bytes()) as u32
+    pub fn count_chars(&self, buffer: BufferRef, offset: u32, len: u32) -> u32 {
+        bytecount::num_chars(self.get_slice(buffer, offset, len).as_bytes()) as u32
     }
 
     #[inline(always)]
     #[must_use]
-    pub fn count_newlines(&self, index: u32, offset: u32, len: u32) -> u32 {
-        bytecount::count(self.get_slice(index, offset, len).as_bytes(), b'\n') as _
+    pub fn count_newlines(&self, buffer: BufferRef, offset: u32, len: u32) -> u32 {
+        bytecount::count(self.get_slice(buffer, offset, len).as_bytes(), b'\n') as _
+    }
+
+    #[inline(always)]
+    fn get_newlines(&self, buffer: BufferRef) -> &[u32] {
+        if buffer == MOD_BUFFER {
+            &self.modifications_newline_offsets
+        } else {
+            &self.original_buffers[buffer].newline_offsets
+        }
+    }
+
+    #[inline(always)]
+    fn get_checkpoints(&self, buffer: BufferRef) -> &[(u32, u32)] {
+        if buffer == MOD_BUFFER {
+            &self.modifications_char_checkpoints
+        } else {
+            &self.original_buffers[buffer].char_checkpoints
+        }
+    }
+
+    /// Converts an absolute char index to an absolute byte offset for a specific buffer
+    #[must_use]
+    pub fn char_to_byte_absolute(&self, buffer: BufferRef, target_char: u32) -> u32 {
+        if target_char == 0 { return 0; }
+
+        let checkpoints = self.get_checkpoints(buffer);
+        let cp_index = checkpoints.partition_point(|&(c, _)| c <= target_char);
+
+        let (current_char, current_byte) = if cp_index == 0 {
+            (0, 0)
+        } else {
+            unsafe { *checkpoints.get_unchecked(cp_index - 1) }
+        };
+
+        let remainder_chars = target_char - current_char;
+        if remainder_chars == 0 { return current_byte; }
+
+        //
+        // Bounded scan: Never exceeds 63 characters
+        //
+        let text = self.get(buffer);
+        let slice = unsafe { text.get_unchecked(current_byte as usize..) };
+
+        let additional_bytes = slice
+            .char_indices()
+            .nth(remainder_chars as usize)
+            .map(|(b, _)| b as u32)
+            .unwrap_or_else(|| slice.len() as u32); // Fallback to end if out of bounds
+
+        current_byte + additional_bytes
+    }
+
+    /// Converts an absolute byte offset to an absolute char index for a specific buffer
+    #[must_use]
+    pub fn byte_to_char_absolute(&self, buffer: BufferRef, target_byte: u32) -> u32 {
+        if target_byte == 0 { return 0; }
+
+        let checkpoints = self.get_checkpoints(buffer);
+        let cp_index = checkpoints.partition_point(|&(_, b)| b <= target_byte);
+
+        let (current_char, current_byte) = if cp_index == 0 {
+            (0, 0)
+        } else {
+            unsafe { *checkpoints.get_unchecked(cp_index - 1) }
+        };
+
+        let remainder_bytes = target_byte - current_byte;
+        if remainder_bytes == 0 { return current_char; }
+
+        // Bounded scan: Never exceeds 63 characters
+        let text = self.get(buffer);
+        let slice = unsafe { text.get_unchecked(current_byte as usize..target_byte as usize) };
+        let additional_chars = bytecount::num_chars(slice.as_bytes()) as u32;
+
+        current_char + additional_chars
     }
 }
 
@@ -252,7 +363,8 @@ impl Pieces {
         nodes.push(Node {
             left: NIL, right: NIL, offset: 0,
             subtree_len: 0, subtree_chars: 0, subtree_newlines: 0,
-            meta: 0, buffer_start_line: 0
+            meta: 0, buffer_start_line: 0,
+            piece_start_char: 0
         });
         Self { nodes }
     }
@@ -279,12 +391,13 @@ impl Pieces {
         let r = &self.nodes[node.right];
 
         Piece {
-            buffer_index: node.buffer_index(),
-            offset: node.offset,
-            length: node.subtree_len - l.subtree_len - r.subtree_len,
+            buffer: node.buffer_index(),
+            byte_offset: node.offset,
+            byte_length: node.subtree_len - l.subtree_len - r.subtree_len,
             char_count: node.subtree_chars - l.subtree_chars - r.subtree_chars,
             newline_count: node.subtree_newlines - l.subtree_newlines - r.subtree_newlines,
             buffer_start_line: node.buffer_start_line,
+            piece_start_char: node.piece_start_char,
         }
     }
 
@@ -295,15 +408,16 @@ impl Pieces {
 
         let mut node = Node {
             left, right,
-            offset: piece.offset,
-            subtree_len: l.subtree_len + piece.length + r.subtree_len,
+            offset: piece.byte_offset,
+            subtree_len: l.subtree_len + piece.byte_length + r.subtree_len,
             subtree_chars: l.subtree_chars + piece.char_count + r.subtree_chars,
             subtree_newlines: l.subtree_newlines + piece.newline_count + r.subtree_newlines,
             buffer_start_line: piece.buffer_start_line,
+            piece_start_char: piece.piece_start_char,
             meta: 0,
         };
         node.set_color(color);
-        node.set_buffer_index(piece.buffer_index);
+        node.set_buffer(piece.buffer);
 
         self.nodes.push(node)
     }
@@ -371,7 +485,7 @@ impl Pieces {
             Ordering::Less => self.remove_left(root, at, total),
             Ordering::Equal => self.fuse(node.left, node.right),
             Ordering::Greater => {
-                let next_total = total + left_len + node_piece.length;
+                let next_total = total + left_len + node_piece.byte_length;
                 self.remove_right(root, at, next_total)
             }
         }
@@ -409,11 +523,11 @@ impl Pieces {
         let node_piece = self.get_piece(root);
         let left_len = self.nodes[node.left].subtree_len;
 
-        if at < total_offset + left_len + node_piece.length {
+        if at < total_offset + left_len + node_piece.byte_length {
             let lft = self.ins(node.left, p, at, total_offset);
             self.balance(node.color(), lft, node_piece, node.right)
         } else {
-            let next_offset = total_offset + left_len + node_piece.length;
+            let next_offset = total_offset + left_len + node_piece.byte_length;
             let rgt = self.ins(node.right, p, at, next_offset);
             self.balance(node.color(), node.left, node_piece, rgt)
         }
@@ -459,22 +573,30 @@ impl Pieces {
 
     #[inline]
     fn fuse(&mut self, left: NodeRef, right: NodeRef) -> NodeRef {
+        // match: (left, right)
+
+        // case: (None, r)
         if left  == NIL { return right }
         if right == NIL { return left }
 
         let l_node = self.nodes[left];
         let r_node = self.nodes[right];
 
+        // match: (left.color, right.color)
+
+        // case: (B, R)
         if l_node.color() == Color::Black && r_node.color() == Color::Red {
             let fused = self.fuse(left, r_node.left);
             return self.alloc(Color::Red, fused, self.get_piece(right), r_node.right);
         }
 
+        // case: (R, B)
         if l_node.color() == Color::Red && r_node.color() == Color::Black {
             let fused = self.fuse(l_node.right, right);
             return self.alloc(Color::Red, l_node.left, self.get_piece(left), fused);
         }
 
+        // case: (R, R)
         if l_node.color() == Color::Red && r_node.color() == Color::Red {
             let fused = self.fuse(l_node.right, r_node.left);
             let f_node = self.nodes[fused];
@@ -486,6 +608,8 @@ impl Pieces {
             let new_r = self.alloc(Color::Red, fused, self.get_piece(right), r_node.right);
             return self.alloc(Color::Red, l_node.left, self.get_piece(left), new_r);
         }
+
+        // case: (B, B)
 
         let fused = self.fuse(l_node.right, r_node.left);
         let f_node = self.nodes[fused];
@@ -506,11 +630,15 @@ impl Pieces {
         let ll_node = self.nodes[l_node.left];
         let lr_node = self.nodes[l_node.right];
 
+        // match: (color_l, color_r, color_r_l)
+
+        // case: (Some(R), ..)
         if l_node.left != NIL && ll_node.color() == Color::Red {
             let new_ll = self.alloc(Color::Black, ll_node.left, self.get_piece(l_node.left), ll_node.right);
             return self.alloc(Color::Red, new_ll, self.get_piece(left), l_node.right);
         }
 
+        // case: (_, Some(B), _)
         if l_node.right != NIL && lr_node.color() == Color::Black {
             let new_lr = self.alloc(Color::Red, lr_node.left, self.get_piece(l_node.right), lr_node.right);
             let new_l = self.alloc(Color::Black, l_node.left, self.get_piece(left), new_lr);
@@ -518,6 +646,7 @@ impl Pieces {
             return self.balance(Color::Black, nl.left, self.get_piece(new_l), nl.right);
         }
 
+        // case: (_, Some(R), Some(B))
         if l_node.right != NIL && lr_node.color() == Color::Red {
             let lrl_node = self.nodes[lr_node.left];
             if lr_node.left != NIL && lrl_node.color() == Color::Black {
@@ -530,6 +659,7 @@ impl Pieces {
                 return self.alloc(Color::Red, new_l, self.get_piece(lr_node.left), new_r);
             }
         }
+
         left
     }
 
@@ -539,11 +669,15 @@ impl Pieces {
         let rl_node = self.nodes[r_node.left];
         let rr_node = self.nodes[r_node.right];
 
+        // match: (color_l, color_l_r, color_r)
+
+        // case: (.., Some(R))
         if r_node.right != NIL && rr_node.color() == Color::Red {
             let new_rr = self.alloc(Color::Black, rr_node.left, self.get_piece(r_node.right), rr_node.right);
             return self.alloc(Color::Red, r_node.left, self.get_piece(right), new_rr);
         }
 
+        // case: (Some(B), ..)
         if r_node.left != NIL && rl_node.color() == Color::Black {
             let new_rl = self.alloc(Color::Red, rl_node.left, self.get_piece(r_node.left), rl_node.right);
             let new_r = self.alloc(Color::Black, new_rl, self.get_piece(right), r_node.right);
@@ -551,6 +685,7 @@ impl Pieces {
             return self.balance(Color::Black, nr.left, self.get_piece(new_r), nr.right);
         }
 
+        // case: (Some(R), Some(B), _)
         if r_node.left != NIL && rl_node.color() == Color::Red {
             let rlr_node = self.nodes[rl_node.right];
             if rl_node.right != NIL && rlr_node.color() == Color::Black {
@@ -563,6 +698,7 @@ impl Pieces {
                 return self.alloc(Color::Red, new_l, self.get_piece(rl_node.right), new_r);
             }
         }
+
         right
     }
 
@@ -575,7 +711,7 @@ impl Pieces {
         while root != NIL {
             let node = &self.nodes[root];
             let left_len = self.nodes[node.left].subtree_len;
-            let piece_len = self.get_piece(root).length;
+            let piece_len = self.get_piece(root).byte_length;
 
             if target_offset < left_len {
                 root = node.left;
@@ -664,29 +800,27 @@ impl PieceTree {
 
         let length = text.len() as u32;
 
-        let mut offsets = Vec::new();
+        let mut offsets     = Vec::new();
+        let mut checkpoints = Vec::new();
 
-        let mut char_count = 0;
-        let mut newline_count = 0;
-        for (i, b) in text.bytes().enumerate() {
-            if b >= 0xC0 || b < 0x80 { char_count += 1; }
-            if b == b'\n' {
-                newline_count += 1;
-                // Record absolute byte offset in the mod buffer
-                offsets.push(i as u32);
-            }
-        }
+        let (char_count, newline_count) =
+            count_chars_and_newlines_with_offsets_and_checkpoints(
+                text.as_bytes(),
+                &mut offsets,
+                &mut checkpoints
+            );
 
-        tree.buffers.original_buffers.push(Buffer {
+        let buffer = tree.buffers.original_buffers.push(Buffer {
             newline_offsets: offsets.into(),
+            char_checkpoints: checkpoints.into(),
             text: text.into()
         });
-        let buffer_index = (tree.buffers.original_buffers.len() - 1) as u32;
 
         let piece = Piece {
-            buffer_index, char_count, length, newline_count,
-            offset: 0,
-            buffer_start_line: 0
+            buffer, char_count, byte_length: length, newline_count,
+            byte_offset: 0,
+            buffer_start_line: 0,
+            piece_start_char: 0
         };
 
         tree.root = tree.pieces.alloc(Color::Black, NIL, piece, NIL);
@@ -788,14 +922,27 @@ impl PieceTree {
     pub fn insert_no_commit(&mut self, offset: u32, text: &str) {
         let mod_offset = self.buffers.modifications_buffer.len() as u32;
         let start_line_in_buffer = self.buffers.modifications_newline_offsets.len() as u32;
+        let mut total_char_count = if let Some(&(c, b)) = self.buffers.modifications_char_checkpoints.last() {
+            let tail_bytes = &self.buffers.modifications_buffer[b as usize..mod_offset as usize];
+            c + bytecount::num_chars(tail_bytes.as_bytes()) as u32
+        } else {
+            bytecount::num_chars(self.buffers.modifications_buffer[..mod_offset as usize].as_bytes()) as u32
+        };
 
-        let mut char_count = 0;
         let mut newline_count = 0;
+        let mut char_count = 0;
         for (i, b) in text.bytes().enumerate() {
-            if b >= 0xC0 || b < 0x80 { char_count += 1; }
+            if b >= 0xC0 || b < 0x80 {
+                if total_char_count > 0 && total_char_count % CHECKPOINT_INTERVAL == 0 {
+                    self.buffers.modifications_char_checkpoints.push((total_char_count, mod_offset + i as u32));
+                }
+
+                total_char_count += 1;
+                char_count += 1;
+            }
+
             if b == b'\n' {
                 newline_count += 1;
-                // Record absolute byte offset in the mod buffer
                 self.buffers.modifications_newline_offsets.push(mod_offset + i as u32);
             }
         }
@@ -804,12 +951,13 @@ impl PieceTree {
         let text_len = text.len() as u32;
 
         let new_piece = Piece {
-            buffer_index: MOD_BUFFER_INDEX,
-            offset: mod_offset,
-            length: text.len() as u32,
+            buffer: MOD_BUFFER,
+            byte_offset: mod_offset,
+            byte_length: text.len() as u32,
             newline_count,
             char_count,
             buffer_start_line: start_line_in_buffer,
+            piece_start_char:  total_char_count - char_count,
         };
 
         //
@@ -850,7 +998,7 @@ impl PieceTree {
         //
         // Case #1.
         //
-        if rel_offset == p.length {
+        if rel_offset == p.byte_length {
             //
             // There's a bonus case here.  If our last insertion point was the same as this piece's
             // last and it inserted into the mod buffer, then we can simply 'extend' this piece by
@@ -861,7 +1009,7 @@ impl PieceTree {
             // 4. Extend the old piece's length to the length of the newly created piece.
             // 5. Re-insert the new piece.
             //
-            if p.buffer_index == MOD_BUFFER_INDEX && p.offset + p.length == mod_offset {
+            if p.buffer == MOD_BUFFER && p.byte_offset + p.byte_length == mod_offset {
                 // THE FREDBUF WAY: 1 single targeted traversal!
                 self.root = self.pieces.extend_piece(
                     self.root,
@@ -896,7 +1044,7 @@ impl PieceTree {
             // Now try to merge cur_piece with its right neighbor,
             // right neighbor starts at cur_start + cur_piece.length.
             //
-            let right_neighbor_start = cur_start + cur_piece.length;
+            let right_neighbor_start = cur_start + cur_piece.byte_length;
             self.try_merge_left_with_right(right_neighbor_start, cur_piece, cur_start);
 
             return;
@@ -926,8 +1074,8 @@ impl PieceTree {
                 //
                 // Predecessor must be a mod-buf piece ending at mod_offset.
                 //
-                if prev.buffer_index == MOD_BUFFER_INDEX
-                    && prev.offset + prev.length == mod_offset
+                if prev.buffer == MOD_BUFFER
+                    && prev.byte_offset + prev.byte_length == mod_offset
                 {
                     self.root = self.pieces.extend_piece(
                         self.root,
@@ -958,7 +1106,7 @@ impl PieceTree {
                 Some((merged_start, merged)) => (merged_start, merged),
                 None => (offset, new_piece),
             };
-            let right_neighbor_start = cur_start + cur_piece.length;
+            let right_neighbor_start = cur_start + cur_piece.byte_length;
             self.try_merge_left_with_right(right_neighbor_start, cur_piece, cur_start);
 
             return;
@@ -972,37 +1120,39 @@ impl PieceTree {
 
         let left_len = rel_offset;
         let (left_chars, left_nl) = self.buffers.count_chars_and_newlines(
-            p.buffer_index, p.offset, left_len
+            p.buffer, p.byte_offset, left_len
         );
 
         let left = Piece {
-            buffer_index:  p.buffer_index,
-            offset:        p.offset,
-            length:        left_len,
+            buffer:  p.buffer,
+            byte_offset:        p.byte_offset,
+            byte_length:        left_len,
             newline_count: left_nl,
             char_count:    left_chars,
-            buffer_start_line: p.buffer_start_line
+            buffer_start_line: p.buffer_start_line,
+            piece_start_char: p.piece_start_char,
         };
 
         let right = Piece {
-            buffer_index:  p.buffer_index,
-            offset:        p.offset + left_len,
-            length:        p.length - left_len,
+            buffer:  p.buffer,
+            byte_offset:        p.byte_offset + left_len,
+            byte_length:        p.byte_length - left_len,
             newline_count: p.newline_count - left_nl,
             char_count:    p.char_count - left_chars,
             buffer_start_line: p.buffer_start_line + left_nl,
+            piece_start_char: p.piece_start_char + left_chars,
         };
 
         self.root = self.pieces.remove_node(self.root, start_offset);
         self.root = self.pieces.insert_node(self.root, left, start_offset);
-        self.root = self.pieces.insert_node(self.root, new_piece, start_offset + left.length);
-        self.root = self.pieces.insert_node(self.root, right, start_offset + left.length + new_piece.length);
+        self.root = self.pieces.insert_node(self.root, new_piece, start_offset + left.byte_length);
+        self.root = self.pieces.insert_node(self.root, right, start_offset + left.byte_length + new_piece.byte_length);
 
         self.last_mod_end  = new_mod_end;
         self.last_tree_end = new_tree_end;
 
-        let new_piece_start  = start_offset + left.length;
-        let right_stump_start = new_piece_start + new_piece.length;
+        let new_piece_start  = start_offset + left.byte_length;
+        let right_stump_start = new_piece_start + new_piece.byte_length;
 
         //
         // Merge left stump -> new_piece  (new_piece is right side)
@@ -1037,7 +1187,7 @@ impl PieceTree {
             )) = self.find_position(offset, false) else { break };
 
             let p = self.pieces.get_piece(node_index);
-            if rel_offset == p.length { break }
+            if rel_offset == p.byte_length { break }
 
             let piece_start        = offset - rel_offset;
             let left_len           = rel_offset;
@@ -1051,16 +1201,17 @@ impl PieceTree {
             //
             if left_len > 0 {
                 let (left_chars, left_nl) = self.buffers.count_chars_and_newlines(
-                    p.buffer_index, p.offset, left_len
+                    p.buffer, p.byte_offset, left_len
                 );
 
                 let left = Piece {
-                    buffer_index:  p.buffer_index,
-                    offset:        p.offset,
-                    length:        left_len,
+                    buffer:  p.buffer,
+                    byte_offset:        p.byte_offset,
+                    byte_length:        left_len,
                     newline_count: left_nl,
                     char_count:    left_chars,
-                    buffer_start_line: p.buffer_start_line
+                    buffer_start_line: p.buffer_start_line,
+                    piece_start_char: p.piece_start_char,
                 };
                 self.root = self.pieces.insert_node(self.root, left, piece_start);
             }
@@ -1068,22 +1219,23 @@ impl PieceTree {
             // Simple case: the range of characters we want to delete are
             // held directly within this node.  Remove the node, resize it
             // then add it back.
-            if right_delete_start < p.length {
+            if right_delete_start < p.byte_length {
                 //
                 // Insert right stump and done
                 //
-                let right_len    = p.length - right_delete_start;
-                let right_offset = p.offset + right_delete_start;
+                let right_len    = p.byte_length - right_delete_start;
+                let right_offset = p.byte_offset + right_delete_start;
                 let (right_chars, right_nl) = self.buffers.count_chars_and_newlines(
-                    p.buffer_index, right_offset, right_len
+                    p.buffer, right_offset, right_len
                 );
                 let right = Piece {
-                    buffer_index:  p.buffer_index,
-                    offset:        right_offset,
-                    length:        right_len,
+                    buffer:  p.buffer,
+                    byte_offset:        right_offset,
+                    byte_length:        right_len,
                     newline_count: right_nl,
                     char_count:    right_chars,
-                    buffer_start_line: p.buffer_start_line + (p.newline_count - right_nl)
+                    buffer_start_line: p.buffer_start_line + (p.newline_count - right_nl),
+                    piece_start_char: p.piece_start_char + (p.char_count - right_chars),
                 };
                 let right_insert_pos = piece_start + left_len;
                 self.root = self.pieces.insert_node(self.root, right, right_insert_pos);
@@ -1101,7 +1253,7 @@ impl PieceTree {
             // The deletion spans past the end of this piece.  We consume its tail
             // (or the entire piece if left_len == 0), then loop to process the next node.
             //
-            let end_clamp = core::cmp::min(p.length, right_delete_start);
+            let end_clamp = core::cmp::min(p.byte_length, right_delete_start);
             let deleted   = end_clamp - left_len;
             if deleted == 0 { break }
             remaining -= deleted;
@@ -1127,13 +1279,13 @@ impl PieceTree {
     #[inline]
     fn try_merge_right_with_left(&mut self, right_start: u32, right: Piece) -> Option<(u32, Piece)> {
         if right_start == 0 { return None; }
-        if right.buffer_index != MOD_BUFFER_INDEX { return None; }
+        if right.buffer != MOD_BUFFER { return None; }
 
         let Some((left_index, left_rel)) = self.find_position(right_start - 1, false) else { return None };
         let left = self.pieces.get_piece(left_index);
 
-        if left.buffer_index != MOD_BUFFER_INDEX { return None; }
-        if left.offset + left.length != right.offset { return None; }
+        if left.buffer != MOD_BUFFER { return None; }
+        if left.byte_offset + left.byte_length != right.byte_offset { return None; }
 
         let left_start = (right_start - 1) - left_rel;
 
@@ -1141,12 +1293,13 @@ impl PieceTree {
         self.root = self.pieces.remove_node(self.root, left_start);
 
         let merged = Piece {
-            buffer_index:  MOD_BUFFER_INDEX,
-            offset:        left.offset,
-            length:        left.length        + right.length,
+            buffer:  MOD_BUFFER,
+            byte_offset:        left.byte_offset,
+            byte_length:        left.byte_length        + right.byte_length,
             newline_count: left.newline_count + right.newline_count,
             char_count:    left.char_count    + right.char_count,
-            buffer_start_line: left.buffer_start_line
+            buffer_start_line: left.buffer_start_line,
+            piece_start_char: left.piece_start_char,  // right side extends, left start unchanged
         };
         self.root = self.pieces.insert_node(self.root, merged, left_start);
         Some((left_start, merged))
@@ -1157,25 +1310,26 @@ impl PieceTree {
     /// i.e. the start of its right neighbor.
     #[inline]
     fn try_merge_left_with_right(&mut self, right_start_offset: u32, left: Piece, left_start: u32) -> bool {
-        if left.buffer_index != MOD_BUFFER_INDEX { return false; }
+        if left.buffer != MOD_BUFFER { return false; }
 
         let Some((right_index, right_rel)) = self.find_position(right_start_offset, false) else { return false };
         if right_rel != 0 { return false; }
         let right = self.pieces.get_piece(right_index);
 
-        if right.buffer_index != MOD_BUFFER_INDEX { return false; }
-        if left.offset + left.length != right.offset { return false; }
+        if right.buffer != MOD_BUFFER { return false; }
+        if left.byte_offset + left.byte_length != right.byte_offset { return false; }
 
         self.root = self.pieces.remove_node(self.root, left_start);
         self.root = self.pieces.remove_node(self.root, left_start);
 
         let merged = Piece {
-            buffer_index:  MOD_BUFFER_INDEX,
-            offset:        left.offset,
-            length:        left.length        + right.length,
+            buffer:  MOD_BUFFER,
+            byte_offset:        left.byte_offset,
+            byte_length:        left.byte_length        + right.byte_length,
             newline_count: left.newline_count + right.newline_count,
             char_count:    left.char_count    + right.char_count,
-            buffer_start_line: left.buffer_start_line
+            buffer_start_line: left.buffer_start_line,
+            piece_start_char: left.piece_start_char,  // right side extends, left start unchanged
         };
         self.root = self.pieces.insert_node(self.root, merged, left_start);
         true
@@ -1200,7 +1354,7 @@ impl PieceTree {
                 last_valid = current;
                 current = self.pieces.get(current).right;
             }
-            let len = self.pieces.get_piece(last_valid).length;
+            let len = self.pieces.get_piece(last_valid).byte_length;
             return Some((last_valid, len));
         }
 
@@ -1209,22 +1363,19 @@ impl PieceTree {
 
     #[cfg(feature = "write")]
     #[inline]
-    /// Efficiently streams the logical document to any `std::io::Write` target (File, stdout, Network, etc).
-    /// Bypasses `TreeWalker`'s char-by-char decoding to write raw byte slices in bulk.
     pub fn write_to<W: std::io::Write>(&self, mut writer: W) -> std::io::Result<()> {
         if self.root == NIL {
             return Ok(());
         }
 
         for (_, piece) in self.pieces() {
-            let slice = self.buffers.get_slice(piece.buffer_index, piece.offset, piece.length);
+            let slice = self.buffers.get_slice(piece.buffer, piece.byte_offset, piece.byte_length);
             writer.write_all(slice.as_bytes())?;
         }
 
         writer.flush()
     }
 }
-
 
 impl PieceTree {
     #[inline]
@@ -1252,6 +1403,7 @@ impl PieceTree {
                 subtree_len: node.subtree_len,
                 subtree_chars: node.subtree_chars,
                 subtree_newlines: node.subtree_newlines,
+                piece_start_char: node.piece_start_char,
                 meta: node.meta,
                 buffer_start_line: node.buffer_start_line
             });
@@ -1260,20 +1412,20 @@ impl PieceTree {
             new_index
         }
 
-        let mut new_arena = Pieces::new();
+        let mut new_pieces = Pieces::new();
 
         self.scratch_index_map.clear();
         self.scratch_index_map.resize(self.pieces.nodes.len(), 0);
 
-        self.root = copy_node(self.root, &self.pieces, &mut new_arena, &mut self.scratch_index_map);
+        self.root = copy_node(self.root, &self.pieces, &mut new_pieces, &mut self.scratch_index_map);
         for entry in &mut self.undo_stack {
-            entry.root = copy_node(entry.root, &self.pieces, &mut new_arena, &mut self.scratch_index_map);
+            entry.root = copy_node(entry.root, &self.pieces, &mut new_pieces, &mut self.scratch_index_map);
         }
         for entry in &mut self.redo_stack {
-            entry.root = copy_node(entry.root, &self.pieces, &mut new_arena, &mut self.scratch_index_map);
+            entry.root = copy_node(entry.root, &self.pieces, &mut new_pieces, &mut self.scratch_index_map);
         }
 
-        self.pieces = new_arena;
+        self.pieces = new_pieces;
     }
 
     #[inline]
@@ -1284,26 +1436,28 @@ impl PieceTree {
         let length = squashed_text.len() as u32;
 
         let mut offsets = Vec::new();
+        let mut checkpoints = Vec::new();
 
-        let mut char_count = 0;
-        let mut newline_count = 0;
-        for (i, b) in squashed_text.bytes().enumerate() {
-            if b >= 0xC0 || b < 0x80 { char_count += 1; }
-            if b == b'\n' {
-                newline_count += 1;
-                // Record absolute byte offset in the mod buffer
-                offsets.push(i as u32);
-            }
-        }
+        let (char_count, newline_count) =
+            count_chars_and_newlines_with_offsets_and_checkpoints(
+                squashed_text.as_bytes(),
+                &mut offsets,
+                &mut checkpoints
+            );
 
         self.buffers = Buffers::new();
-        self.buffers.original_buffers.push(Buffer {
+        let buffer = self.buffers.original_buffers.push(Buffer {
             newline_offsets: offsets.into(),
+            char_checkpoints: checkpoints.into(),
             text: squashed_text.into()
         });
         self.pieces = Pieces::new();
 
-        let piece = Piece { buffer_index: 0, offset: 0, length, newline_count, char_count, buffer_start_line: 0 };
+        let piece = Piece {
+            byte_length: length, newline_count, char_count,
+            buffer, byte_offset: 0,
+            buffer_start_line: 0, piece_start_char: 0
+        };
         self.root = self.pieces.insert_node(NIL, piece, 0);
 
         self.undo_stack.clear();
@@ -1331,7 +1485,7 @@ impl PieceTree {
     #[inline(always)]
     #[must_use]
     pub fn original_buffers_bytes(&self) -> u32 {
-        self.buffers.original_buffers.iter().map(|s| s.len()).sum::<usize>() as _
+        self.buffers.original_buffers.values().map(|s| s.len()).sum::<usize>() as _
     }
 
     /// Bytes consumed by undo + redo history entries.
@@ -1436,7 +1590,7 @@ impl<'a> Iterator for ChunkIter<'a> {
     fn next(&mut self) -> Option<&'a str> {
         loop {
             let (_, p) = self.pieces.next()?;
-            let piece_end = self.piece_start + p.length;
+            let piece_end = self.piece_start + p.byte_length;
 
             // Skip pieces entirely before our window
             if piece_end <= self.start {
@@ -1449,11 +1603,11 @@ impl<'a> Iterator for ChunkIter<'a> {
             }
 
             let slice_start = self.start.saturating_sub(self.piece_start);
-            let slice_end   = (self.end - self.piece_start).min(p.length);
+            let slice_end   = (self.end - self.piece_start).min(p.byte_length);
 
             self.piece_start = piece_end;
 
-            let text = self.tree.buffers.get_slice(p.buffer_index, p.offset + slice_start, slice_end - slice_start);
+            let text = self.tree.buffers.get_slice(p.buffer, p.byte_offset + slice_start, slice_end - slice_start);
             if text.is_empty() { continue; }
             return Some(text);
         }
@@ -1689,7 +1843,7 @@ impl PieceTree {
             let node = self.pieces.get(current);
             let p = self.pieces.get_piece(current);
             let left_len = self.pieces.get(node.left).subtree_len;
-            let piece_len = p.length;
+            let piece_len = p.byte_length;
 
             if current_offset < left_len {
                 current = node.left;
@@ -1700,7 +1854,7 @@ impl PieceTree {
                 //
 
                 let rel_offset = current_offset - left_len;
-                let text = self.buffers.get_slice(p.buffer_index, p.offset, p.length);
+                let text = self.buffers.get_slice(p.buffer, p.byte_offset, p.byte_length);
 
                 return &text.as_bytes()[rel_offset as usize..];
 
@@ -1717,49 +1871,44 @@ impl PieceTree {
     #[must_use]
     pub fn line_to_offset(&self, target_line: u32) -> Option<u32> {
         if target_line == 0 { return Some(0) }
-
         let mut current = self.root;
         let mut current_offset = 0;
         let mut current_line = 0;
-
         while current != NIL {
             let node = self.pieces.get(current);
-
             let p = self.pieces.get_piece(current);
-
             let left_newlines = self.pieces.get(node.left).subtree_newlines;
             let left_len      = self.pieces.get(node.left).subtree_len;
-
             let piece_newlines = p.newline_count;
-            let piece_len      = p.length;
+            let piece_len      = p.byte_length;
 
-            if target_line < current_line + left_newlines {
+            if target_line <= current_line + left_newlines {
+                //
+                // The target line starts somewhere in the left subtree
+                //
                 current = node.left;
 
             } else if target_line <= current_line + left_newlines + piece_newlines {
-                let rel_line = target_line - (current_line + left_newlines);
-                if rel_line == 0 {
-                    return Some(current_offset + left_len)
-                }
+                //
+                // The target line starts inside this piece
+                //
 
-                // Calculate the exact index in the newline array
-                let absolute_newline_idx = p.buffer_start_line + rel_line - 1;
+                current_line   += left_newlines;
+                current_offset += left_len;
 
-                // Fetch the absolute byte offset from the correct buffer
-                let absolute_byte_offset = if p.buffer_index == MOD_BUFFER_INDEX {
-                    self.buffers.modifications_newline_offsets[absolute_newline_idx as usize]
+                let rel_line = target_line - current_line; // >= 1, guaranteed
+                let absolute_newline_index = p.buffer_start_line + rel_line - 1;
+                let absolute_byte_offset = if p.buffer == MOD_BUFFER {
+                    self.buffers.modifications_newline_offsets[absolute_newline_index as usize]
                 } else {
-                    self.buffers.original_buffers[p.buffer_index as usize]
-                        .newline_offsets[absolute_newline_idx as usize]
+                    self.buffers.original_buffers[p.buffer].newline_offsets[absolute_newline_index as usize]
                 };
 
-                // Convert absolute buffer offset into a relative piece offset
-                let local_piece_offset = absolute_byte_offset - p.offset + 1;
-
-                return Some(current_offset + left_len + local_piece_offset);
+                let local_piece_offset = absolute_byte_offset - p.byte_offset + 1;
+                return Some(current_offset + local_piece_offset);
 
             } else {
-                current_line += left_newlines + piece_newlines;
+                current_line   += left_newlines + piece_newlines;
                 current_offset += left_len + piece_len;
                 current = node.right;
             }
@@ -1772,8 +1921,8 @@ impl PieceTree {
     #[must_use]
     pub fn char_to_byte(&self, char_index: u32) -> Option<u32> {
         let total_chars = self.len_chars();
-        if char_index > total_chars { return None }
-        if char_index == total_chars { return Some(self.len_bytes()) }
+        if char_index > total_chars { return None; }
+        if char_index == total_chars { return Some(self.len_bytes()); }
 
         let mut current = self.root;
         let mut current_byte = 0;
@@ -1781,29 +1930,33 @@ impl PieceTree {
 
         while current != NIL {
             let node = self.pieces.get(current);
+            let left_node = self.pieces.get(node.left);
+
+            let left_chars = left_node.subtree_chars;
+            let left_bytes = left_node.subtree_len;
+
             let p = self.pieces.get_piece(current);
-            let left_chars = self.pieces.get(node.left).subtree_chars;
             let piece_chars = p.char_count;
 
             if char_index < current_char + left_chars {
                 current = node.left;
+
             } else if char_index < current_char + left_chars + piece_chars {
+                //
+                // Target char is inside this piece,
+                // p.piece_start_char is the absolute char index of p.offset in its buffer,
+                // so (p.piece_start_char + rel_char) is the absolute char target.
+                //
+
                 let rel_char = char_index - (current_char + left_chars);
-                let left_len = self.pieces.get(node.left).subtree_len;
+                let absolute_target_byte =
+                    self.buffers.char_to_byte_absolute(p.buffer, p.piece_start_char + rel_char);
 
-                let rel_byte = if p.length == p.char_count {
-                    // ASCII Fast path
-                    rel_char
-                } else {
-                    let text = self.buffers.get_slice(p.buffer_index, p.offset, p.length);
-                    text.char_indices().nth(rel_char as usize).unwrap().0 as u32
-                };
+                return Some(current_byte + left_bytes + (absolute_target_byte - p.byte_offset));
 
-                return Some(current_byte + left_len + rel_byte);
             } else {
                 current_char += left_chars + piece_chars;
-                let left_len = self.pieces.get(node.left).subtree_len;
-                current_byte += left_len + p.length;
+                current_byte += left_bytes + p.byte_length;
                 current = node.right;
             }
         }
@@ -1815,8 +1968,8 @@ impl PieceTree {
     #[must_use]
     pub fn byte_to_char(&self, byte_offset: u32) -> Option<u32> {
         let total_bytes = self.len_bytes();
-        if byte_offset > total_bytes { return None }
-        if byte_offset == total_bytes { return Some(self.len_chars()) }
+        if byte_offset > total_bytes { return None; }
+        if byte_offset == total_bytes { return Some(self.len_chars()); }
 
         let mut current = self.root;
         let mut current_byte = 0;
@@ -1824,28 +1977,30 @@ impl PieceTree {
 
         while current != NIL {
             let node = self.pieces.get(current);
+            let left_node = self.pieces.get(node.left);
+
+            let left_bytes = left_node.subtree_len;
+            let left_chars = left_node.subtree_chars;
+
             let p = self.pieces.get_piece(current);
-            let left_bytes = self.pieces.get(node.left).subtree_len;
-            let piece_bytes = p.length;
+            let piece_bytes = p.byte_length;
 
             if byte_offset < current_byte + left_bytes {
                 current = node.left;
+
             } else if byte_offset < current_byte + left_bytes + piece_bytes {
+                // Target byte is inside this piece.
+                // byte_to_char_absolute gives the absolute char index, so subtracting
+                // piece_start_char converts it to a piece-relative char count.
+
                 let rel_byte = byte_offset - (current_byte + left_bytes);
-                let left_chars = self.pieces.get(node.left).subtree_chars;
+                let absolute_target_char =
+                    self.buffers.byte_to_char_absolute(p.buffer, p.byte_offset + rel_byte);
 
-                // OPTIMIZATION: ASCII Fast-Path. Skip bytecount completely.
-                let chars_up_to = if p.length == p.char_count {
-                    rel_byte
-                } else {
-                    let text = self.buffers.get_slice(p.buffer_index, p.offset, p.length);
-                    bytecount::num_chars(&text.as_bytes()[..rel_byte as usize]) as u32
-                };
+                return Some(current_char + left_chars + (absolute_target_char - p.piece_start_char));
 
-                return Some(current_char + left_chars + chars_up_to);
             } else {
                 current_byte += left_bytes + piece_bytes;
-                let left_chars = self.pieces.get(node.left).subtree_chars;
                 current_char += left_chars + p.char_count;
                 current = node.right;
             }
@@ -1857,78 +2012,80 @@ impl PieceTree {
     #[inline]
     #[must_use]
     pub fn offset_to_line_col(&self, offset: u32) -> Option<(u32, u32)> {
-        let total_len = self.len_bytes();
-        if offset > total_len { return None }
-
-        // Handle End of File perfectly
-        if offset == total_len {
-            let line = self.pieces.get(self.root).subtree_newlines;
+        let total_bytes = self.len_bytes();
+        if offset > total_bytes { return None }
+        if offset == total_bytes {
+            //
+            // Get offset of the last line
+            //
+            let line            = self.pieces.get(self.root).subtree_newlines;
             let line_start_byte = self.line_to_offset(line).unwrap_or(0);
-            let target_char = self.len_chars();
+            let target_char     = self.len_chars();
             let line_start_char = self.byte_to_char(line_start_byte)?;
             return Some((line, target_char - line_start_char));
         }
 
-        let mut current = self.root;
-        let mut current_line = 0;
-        let mut current_byte = 0;
-        let mut current_char = 0; // Tracked to avoid redundant tree traversals
+        let mut current         = self.root;
+        let mut current_line    = 0u32;
+        let mut current_byte    = 0u32;
+        let mut current_char    = 0u32;
 
         while current != NIL {
-            let node = self.pieces.get(current);
-            let p = self.pieces.get_piece(current);
-            let left_len = self.pieces.get(node.left).subtree_len;
-            let left_newlines = self.pieces.get(node.left).subtree_newlines;
-            let left_chars = self.pieces.get(node.left).subtree_chars;
-            let piece_len = p.length;
+            let node          = self.pieces.get(current);
+            let left_node     = self.pieces.get(node.left);
+            let left_bytes    = left_node.subtree_len;
+            let left_newlines = left_node.subtree_newlines;
+            let left_chars    = left_node.subtree_chars;
+            let p             = self.pieces.get_piece(current);
+            let piece_bytes   = p.byte_length;
 
-            if offset < current_byte + left_len {
+            if offset < current_byte + left_bytes {
                 current = node.left;
-            } else if offset < current_byte + left_len + piece_len {
+
+            } else if offset < current_byte + left_bytes + piece_bytes {
                 current_line += left_newlines;
                 current_char += left_chars;
 
-                let rel_off = offset - (current_byte + left_len);
+                let rel_byte = offset - (current_byte + left_bytes);
 
-                // OPTIMIZATION: Binary search the buffer's absolute newline offsets
-                // instead of running `bytecount` over the string slice.
-                let local_newlines = if p.newline_count == 0 {
-                    0
+                let (local_newlines, col) = if p.newline_count == 0 {
+                    let target_char = self.buffers.byte_to_char_absolute(p.buffer, p.byte_offset + rel_byte);
+                    let rel_char    = target_char - p.piece_start_char;
+                    let abs_char    = current_char + rel_char;
+
+                    let line_start_byte = self.line_to_offset(current_line)?;
+                    let line_start_char = self.byte_to_char(line_start_byte)?;
+
+                    (0, abs_char - line_start_char)
                 } else {
-                    let start_idx = p.buffer_start_line as usize;
-                    let end_idx = start_idx + p.newline_count as usize;
-                    let absolute_target = p.offset + rel_off;
+                    let start_index       = p.buffer_start_line as usize;
+                    let end_index         = start_index + p.newline_count as usize;
+                    let absolute_target = p.byte_offset + rel_byte;
 
-                    let offsets = if p.buffer_index == MOD_BUFFER_INDEX {
-                        &self.buffers.modifications_newline_offsets[start_idx..end_idx]
+                    let offsets = &self.buffers.get_newlines(p.buffer)[start_index..end_index];
+
+                    let local_nl = offsets.partition_point(|&off| off < absolute_target) as u32;
+
+                    let target_char = self.buffers.byte_to_char_absolute(p.buffer, p.byte_offset + rel_byte);
+                    let col = if local_nl > 0 {
+                        let last_nl_abs_byte = offsets[local_nl as usize - 1];
+                        let last_nl_char     = self.buffers.byte_to_char_absolute(p.buffer, last_nl_abs_byte);
+                        target_char - (last_nl_char + 1)
                     } else {
-                        &self.buffers.original_buffers[p.buffer_index as usize]
-                            .newline_offsets[start_idx..end_idx]
+                        let line_start_byte = self.line_to_offset(current_line)?;
+                        let line_start_char = self.byte_to_char(line_start_byte)?;
+                        let rel_char        = target_char - p.piece_start_char;
+                        (current_char + rel_char) - line_start_char
                     };
 
-                    offsets.partition_point(|&off| off < absolute_target) as u32
+                    (local_nl, col)
                 };
 
-                current_line += local_newlines;
-
-                // FUSED CALCULATION: Compute target character here and now using the fast-path.
-                let rel_char = if p.length == p.char_count {
-                    rel_off
-                } else {
-                    let text = self.buffers.get_slice(p.buffer_index, p.offset, p.length);
-                    bytecount::num_chars(&text.as_bytes()[..rel_off as usize]) as u32
-                };
-                let target_char = current_char + rel_char;
-
-                // Only require retrieving the start of the current line
-                let line_start_byte = self.line_to_offset(current_line).unwrap_or(0);
-                let line_start_char = self.byte_to_char(line_start_byte)?;
-
-                return Some((current_line, target_char - line_start_char));
+                return Some((current_line + local_newlines, col));
 
             } else {
                 current_line += left_newlines + p.newline_count;
-                current_byte += left_len + piece_len;
+                current_byte += left_bytes + piece_bytes;
                 current_char += left_chars + p.char_count;
                 current = node.right;
             }
@@ -1986,7 +2143,7 @@ impl PieceTree {
     pub fn byte(&self, offset: u32) -> Option<u8> {
         let (node, rel) = self.find_position(offset, false)?;
         let p = self.get_piece(node);
-        let text = self.buffers.get_slice(p.buffer_index, p.offset, p.length);
+        let text = self.buffers.get_slice(p.buffer, p.byte_offset, p.byte_length);
         text.as_bytes().get(rel as usize).copied()
     }
 
@@ -1998,7 +2155,7 @@ impl PieceTree {
         let byte_offset = self.char_to_byte(char_index)?;
         let (node, rel) = self.find_position(byte_offset, false)?;
         let p = self.get_piece(node);
-        let text = self.buffers.get_slice(p.buffer_index, p.offset, p.length);
+        let text = self.buffers.get_slice(p.buffer, p.byte_offset, p.byte_length);
         text[rel as usize..].chars().next()
     }
 
@@ -2177,14 +2334,14 @@ impl<'a, const MAX_INLINE_TREE_DEPTH: usize> TreeWalker<'a, MAX_INLINE_TREE_DEPT
             let node = self.tree.pieces.get(current);
             let p = self.tree.pieces.get_piece(current);
             let left_len = self.tree.pieces.get(node.left).subtree_len;
-            let piece_len = p.length;
+            let piece_len = p.byte_length;
 
             if current_offset < left_len {
                 self.stack.push((current, Direction::Center));
                 current = node.left;
             } else if current_offset < left_len + piece_len {
                 self.stack.push((current, Direction::Right));
-                let text = self.tree.buffers.get_slice(p.buffer_index, p.offset, p.length);
+                let text = self.tree.buffers.get_slice(p.buffer, p.byte_offset, p.byte_length);
                 let rel_offset = current_offset - left_len;
                 self.current_str = text[rel_offset as usize..].chars();
                 break;
@@ -2208,7 +2365,7 @@ impl<'a, const MAX_INLINE_TREE_DEPTH: usize> TreeWalker<'a, MAX_INLINE_TREE_DEPT
                 Direction::Center => {
                     self.stack.push((node_index, Direction::Right));
                     let p = self.tree.pieces.get_piece(node_index);
-                    let text = self.tree.buffers.get_slice(p.buffer_index, p.offset, p.length);
+                    let text = self.tree.buffers.get_slice(p.buffer, p.byte_offset, p.byte_length);
                     self.current_str = text.chars();
                     return;
                 }
@@ -2290,7 +2447,7 @@ impl<'a, const MAX_INLINE_TREE_DEPTH: usize> ReverseTreeWalker<'a, MAX_INLINE_TR
             let node = self.tree.pieces.get(current);
             let p = self.tree.pieces.get_piece(current);
             let left_len = self.tree.pieces.get(node.left).subtree_len;
-            let piece_len = p.length;
+            let piece_len = p.byte_length;
 
             if current_offset < left_len {
                 self.stack.push((current, true));
@@ -2299,7 +2456,7 @@ impl<'a, const MAX_INLINE_TREE_DEPTH: usize> ReverseTreeWalker<'a, MAX_INLINE_TR
             } else if current_offset < left_len + piece_len {
                 self.stack.push((current, true));
 
-                let text = self.tree.buffers.get_slice(p.buffer_index, p.offset, p.length);
+                let text = self.tree.buffers.get_slice(p.buffer, p.byte_offset, p.byte_length);
                 let rel_offset = current_offset - left_len;
 
                 // Keep the subset of the string before the offset
@@ -2331,7 +2488,7 @@ impl Iterator for ReverseTreeWalker<'_> {
                 self.stack.push((node_index, true));
 
                 let p = self.tree.pieces.get_piece(node_index);
-                let text_slice = self.tree.buffers.get_slice(p.buffer_index, p.offset, p.length);
+                let text_slice = self.tree.buffers.get_slice(p.buffer, p.byte_offset, p.byte_length);
 
                 self.current_str = text_slice.chars();
 
@@ -2364,8 +2521,8 @@ impl PieceTree {
         // Check for the mergeable invariant
         //
         let warning = if let Some(prev) = last {
-            if prev.buffer_index == cur.buffer_index
-               && prev.offset + prev.length == cur.offset
+            if prev.buffer == cur.buffer
+               && prev.byte_offset + prev.byte_length == cur.byte_offset
             {
                 " --------- [!!! MERGEABLE NEIGHBORS NOT MERGED !!!] ---------"
             } else {
@@ -2375,12 +2532,12 @@ impl PieceTree {
             ""
         };
 
-        let Piece { buffer_index, offset, length, .. } = cur;
+        let Piece { buffer, byte_offset: offset, byte_length: length, .. } = cur;
 
         writeln!(
             f,
-            "{:indent$}Node {node:?}: Buf={buffer_index}, Off={offset}, Len={length}{warning}",
-            "", indent = depth * 4
+            "{:indent$}Node {node:?}: Buf={}, Off={offset}, Len={length}{warning}",
+            "", buffer.as_u32(), indent = depth * 4
         )?;
 
         *last = Some(cur);
@@ -2418,7 +2575,7 @@ pub fn assert_invariants(tree: &PieceTree) {
         let (l_len, l_bh) = check(tree, n.left);
         let (r_len, r_bh) = check(tree, n.right);
 
-        let expected_len = l_len + piece.length as usize + r_len;
+        let expected_len = l_len + piece.byte_length as usize + r_len;
         assert_eq!(n.subtree_len as usize, expected_len, "subtree_len mismatch");
 
         if n.color() == Color::Red {
@@ -2454,31 +2611,64 @@ pub fn assert_invariants(tree: &PieceTree) {
     }
 }
 
-pub fn assert_piece_metadata(tree: &PieceTree) {   // @Redundant?
-    fn walk(tree: &PieceTree, node: NodeRef) {
+pub fn assert_piece_metadata(tree: &PieceTree) {
+    fn collect(tree: &PieceTree, node: NodeRef, out: &mut Vec<Piece>) {
         if node == NIL { return }
 
         let n = tree.pieces.nodes[node];
-        let p = tree.get_piece(node);
 
-        let buf = tree.buffers.get(p.buffer_index);
-        let start = p.offset as usize;
-        let end = start + p.length as usize;
+        collect(tree, n.left, out);
+        out.push(tree.pieces.get_piece(node));
+        collect(tree, n.right, out);
+    }
+
+    let mut pieces = Vec::new();
+    collect(tree, tree.root, &mut pieces);
+
+    for p in &pieces {
+        let buf   = tree.buffers.get(p.buffer);
+        let start = p.byte_offset as usize;
+        let end   = start + p.byte_length as usize;
 
         assert!(end <= buf.len(), "Piece points past end of buffer");
-        assert!(p.length > 0,     "Zero-length piece found");
+        assert!(p.byte_length > 0, "Zero-length piece found");
 
         let slice = &buf[start..end];
         let (actual_chars, actual_nl) = count_chars_and_newlines(slice.as_bytes());
-
         assert_eq!(p.char_count,    actual_chars, "char_count mismatch");
         assert_eq!(p.newline_count, actual_nl,    "newline_count mismatch");
 
-        walk(tree, n.left);
-        walk(tree, n.right);
-    }
+        //
+        // piece_start_char and buffer_start_line: scan only the prefix once
+        //
+        let prefix = &buf.as_bytes()[..p.byte_offset as usize];
+        let actual_start_char = bytecount::num_chars(prefix) as u32;
+        let actual_start_line = prefix.iter().filter(|&&b| b == b'\n').count() as u32;
 
-    walk(tree, tree.root);
+        assert_eq!(p.piece_start_char,  actual_start_char,
+            "piece_start_char mismatch buffer={} offset={}", p.buffer.as_u32(), p.byte_offset);
+
+        assert_eq!(p.buffer_start_line, actual_start_line,
+            "buffer_start_line mismatch buffer={} offset={}", p.buffer.as_u32(), p.byte_offset);
+
+        //
+        // Verify the newline_offsets slice
+        //
+        let nl_offsets = &tree.buffers.get_newlines(p.buffer)
+            [p.buffer_start_line as usize..(p.buffer_start_line + p.newline_count) as usize];
+
+        for (i, &abs_byte) in nl_offsets.iter().enumerate() {
+            assert!(
+                abs_byte >= p.byte_offset && abs_byte < p.byte_offset + p.byte_length,
+                "newline_offsets[{}] outside piece", p.buffer_start_line as usize + i
+            );
+
+            assert_eq!(
+                buf.as_bytes()[abs_byte as usize], b'\n',
+                "newline_offsets[{}] not a newline", p.buffer_start_line as usize + i
+            );
+        }
+    }
 }
 
 pub fn assert_no_mergeable_neighbors(tree: &PieceTree) {
@@ -2491,8 +2681,8 @@ pub fn assert_no_mergeable_neighbors(tree: &PieceTree) {
         let cur = tree.get_piece(node);
 
         if let Some(prev) = *last {
-            if prev.buffer_index == cur.buffer_index
-                && prev.offset + prev.length == cur.offset
+            if prev.buffer == cur.buffer
+                && prev.byte_offset + prev.byte_length == cur.byte_offset
             {
                 panic!("Mergeable neighboring pieces were left unmerged");
             }
@@ -2504,4 +2694,96 @@ pub fn assert_no_mergeable_neighbors(tree: &PieceTree) {
 
     let mut last = None;
     inorder(tree, tree.root, &mut last);
+}
+
+pub fn assert_coordinates(tree: &PieceTree, oracle: &str) {
+    #[inline]
+    fn oracle_offset_to_line_col(s: &str, byte_offset: usize) -> (usize, usize) {
+        let slice = &s[..byte_offset];
+        let line  = bytecount::count(slice.as_bytes(), b'\n');
+        let last_nl = slice.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let col   = bytecount::num_chars(s[last_nl..byte_offset].as_bytes());
+        (line, col)
+    }
+
+    #[inline]
+    fn oracle_line_to_offset(s: &str, target_line: usize) -> usize {
+        if target_line == 0 { return 0 }
+
+        let mut line = 0;
+        for (i, c) in s.char_indices() {
+            if c == '\n' {
+                line += 1;
+                if line == target_line { return i + 1; }
+            }
+        }
+
+        s.len()
+    }
+
+    fn check_coordinate(tree: &PieceTree, oracle: &str, byte_idx: u32) {
+        let char_idx = bytecount::num_chars(oracle[..byte_idx as usize].as_bytes()) as u32;
+
+        assert_eq!(tree.char_to_byte(char_idx), Some(byte_idx),
+                   "char_to_byte({}) wrong", char_idx);
+
+        assert_eq!(tree.byte_to_char(byte_idx), Some(char_idx),
+                   "byte_to_char({}) wrong", byte_idx);
+
+        let expected_lc = oracle_offset_to_line_col(oracle, byte_idx as usize);
+        assert_eq!(
+            tree.offset_to_line_col(byte_idx),
+            Some((expected_lc.0 as u32, expected_lc.1 as u32)),
+            "offset_to_line_col({}) wrong", byte_idx
+        );
+    }
+
+    let total_bytes = oracle.len() as u32;
+    let total_chars = oracle.chars().count() as u32;
+
+    //
+    // Always check these
+    //
+    check_coordinate(tree, oracle, 0);
+    if total_bytes > 0 {
+        check_coordinate(tree, oracle, total_bytes - 1);
+        check_coordinate(tree, oracle, total_bytes / 2);
+    }
+
+
+    //
+    // Sample ~8 positions spread across the document
+    //
+    for i in 0u32..8 {
+        let byte = ((total_bytes as u64 * ((i as u64 * 2654435761) & 0xFFFFFFFF)) >> 32) as u32 % total_bytes.max(1);
+
+        // Snap to char boundary
+        let byte = oracle.as_bytes()[..byte as usize]
+            .iter().rposition(|&b| b < 0x80 || b >= 0xC0)
+            .map(|i| i as u32)
+            .unwrap_or(0);
+
+        check_coordinate(tree, oracle, byte);
+    }
+
+    //
+    // EOF and out-of-bounds always
+    //
+    assert_eq!(tree.char_to_byte(total_chars), Some(total_bytes));
+    assert_eq!(tree.byte_to_char(total_bytes), Some(total_chars));
+    assert_eq!(tree.char_to_byte(total_chars + 1), None);
+    assert_eq!(tree.byte_to_char(total_bytes + 1), None);
+    assert_eq!(tree.offset_to_line_col(total_bytes + 1), None);
+
+    //
+    // line_to_offset: check first, last, middle line only
+    //
+    let total_lines = oracle.chars().filter(|&c| c == '\n').count() + 1;
+    for line in [0, total_lines / 2, total_lines.saturating_sub(1)] {
+        let expected = oracle_line_to_offset(oracle, line) as u32;
+        assert_eq!(tree.line_to_offset(line as u32), Some(expected),
+            "line_to_offset({}) wrong", line);
+    }
+
+    assert_eq!(tree.line_to_offset(total_lines as u32), None);
 }
