@@ -97,7 +97,7 @@ fn main() {
 
 ## Tree Snapshotting
 
-```
+```rust
 fn main() {
     use piece_tree::PieceTree;
 
