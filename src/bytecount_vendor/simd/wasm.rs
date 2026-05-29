@@ -1,3 +1,5 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use core::arch::wasm32::*;
 
 const MASK: [u8; 32] = [

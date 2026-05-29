@@ -1,7 +1,9 @@
-
+#![allow(unsafe_op_in_unsafe_fn)]
 
 #[cfg(not(feature = "runtime-dispatch-simd"))]
 use core::{mem, simd};
+#[cfg(not(feature = "runtime-dispatch-simd"))]
+use simd::{Simd, Select};
 
 #[cfg(feature = "runtime-dispatch-simd")]
 use std::{mem, simd};
@@ -45,7 +47,7 @@ pub fn chunk_count(haystack: &[u8], needle: u8) -> usize {
         while haystack.len() >= offset + 64 * 255 {
             let mut counts = u8x64::splat(0);
             for _ in 0..255 {
-                counts -= u8x64_from_offset(haystack, offset).simd_eq(needles_x64).to_int().cast();
+                counts -= u8x64_from_offset(haystack, offset).simd_eq(needles_x64).select(Simd::splat(1u8), Simd::splat(0u8));
                 offset += 64;
             }
             count += sum_x64(&counts);
@@ -55,7 +57,7 @@ pub fn chunk_count(haystack: &[u8], needle: u8) -> usize {
         if haystack.len() >= offset + 64 * 128 {
             let mut counts = u8x64::splat(0);
             for _ in 0..128 {
-                counts -= u8x64_from_offset(haystack, offset).simd_eq(needles_x64).to_int().cast();
+                counts -= u8x64_from_offset(haystack, offset).simd_eq(needles_x64).select(Simd::splat(1u8), Simd::splat(0u8));
                 offset += 64;
             }
             count += sum_x64(&counts);
@@ -67,7 +69,7 @@ pub fn chunk_count(haystack: &[u8], needle: u8) -> usize {
         let mut counts = u8x32::splat(0);
         for i in 0..(haystack.len() - offset) / 32 {
             counts -=
-                u8x32_from_offset(haystack, offset + i * 32).simd_eq(needles_x32).to_int().cast();
+                u8x32_from_offset(haystack, offset + i * 32).simd_eq(needles_x32).select(Simd::splat(1u8), Simd::splat(0u8));
         }
         count += sum_x32(&counts);
 
@@ -75,7 +77,7 @@ pub fn chunk_count(haystack: &[u8], needle: u8) -> usize {
         counts = u8x32::splat(0);
         if haystack.len() % 32 != 0 {
             counts -=
-                u8x32_from_offset(haystack, haystack.len() - 32).simd_eq(needles_x32).to_int().cast()
+                u8x32_from_offset(haystack, haystack.len() - 32).simd_eq(needles_x32).select(Simd::splat(1u8), Simd::splat(0u8))
                     & u8x32_from_offset(&MASK, haystack.len() % 32);
         }
         count += sum_x32(&counts);
@@ -85,11 +87,11 @@ pub fn chunk_count(haystack: &[u8], needle: u8) -> usize {
 }
 
 fn is_leading_utf8_byte_x64(u8s: u8x64) -> u8x64 {
-    (u8s & u8x64::splat(0b1100_0000)).simd_ne(u8x64::splat(0b1000_0000)).to_int().cast()
+    (u8s & u8x64::splat(0b1100_0000)).simd_ne(u8x64::splat(0b1000_0000)).select(Simd::splat(1u8), Simd::splat(0u8))
 }
 
 fn is_leading_utf8_byte_x32(u8s: u8x32) -> u8x32 {
-    (u8s & u8x32::splat(0b1100_0000)).simd_ne(u8x32::splat(0b1000_0000)).to_int().cast()
+    (u8s & u8x32::splat(0b1100_0000)).simd_ne(u8x32::splat(0b1000_0000)).select(Simd::splat(1u8), Simd::splat(0u8))
 }
 
 pub fn chunk_num_chars(utf8_chars: &[u8]) -> usize {

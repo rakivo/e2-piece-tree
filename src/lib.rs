@@ -1,5 +1,7 @@
 #![cfg_attr(not(feature = "write"), no_std)]
 
+#![cfg_attr(all(not(feature = "runtime-dispatch-simd"), feature = "generic-simd"), feature(portable_simd))]
+
 #![warn(clippy::all, clippy::pedantic, dead_code, clippy::cargo)]
 #![allow(
     unused_assignments,
@@ -189,6 +191,7 @@ impl Deref for OriginalBuffer {
 pub struct Buffers {
     pub original_buffers: PrimaryMap<BufferRef, OriginalBuffer>,
 
+    pub modifications_char_count:       u32,
     pub modifications_buffer:           String,
     pub modifications_newline_offsets:  Vec<u32>,
     pub modifications_char_checkpoints: Vec<(u32, u32)>,
@@ -199,6 +202,7 @@ impl Default for Buffers {
     fn default() -> Self {
         Self {
             original_buffers: PrimaryMap::new(),
+            modifications_char_count: 0,
             modifications_newline_offsets: Vec::with_capacity(1024),
             modifications_char_checkpoints: Vec::with_capacity(128),
             modifications_buffer: String::with_capacity(1024 * 64),
@@ -991,7 +995,7 @@ impl Pieces {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct PieceTree {
     //
     // `last_insert_end`      is the mod-buffer offset one past the last inserted byte.
@@ -1014,6 +1018,22 @@ pub struct PieceTree {
     pub buffers: Buffers,
 
     pub scratch_index_map: Vec<u32>,
+}
+
+impl Default for PieceTree {
+    fn default() -> Self {
+        Self {
+            last_mod_end:      u32::MAX,
+            last_tree_end:     u32::MAX,
+            root:              NIL,
+            transaction_depth: 0,
+            undo_stack:        Vec::new(),
+            redo_stack:        Vec::new(),
+            pieces:            Pieces::new(),
+            buffers:           Buffers::new(),
+            scratch_index_map: Vec::new(),
+        }
+    }
 }
 
 impl core::fmt::Display for PieceTree {
@@ -1283,12 +1303,11 @@ impl PieceTree {
         let mod_offset = self.buffers.modifications_buffer.len() as u32;
         let start_line_in_buffer = self.buffers.modifications_newline_offsets.len() as u32;
 
-        let mut total_char_count = if let Some(&(c, b)) = self.buffers.modifications_char_checkpoints.last() {
-            let tail_bytes = &self.buffers.modifications_buffer[b as usize..mod_offset as usize];
-            c + bytecount::num_chars(tail_bytes.as_bytes()) as u32
-        } else {
-            bytecount::num_chars(self.buffers.modifications_buffer[..mod_offset as usize].as_bytes()) as u32
-        };
+        let total_char_count_before = self.buffers.modifications_char_count;
+        let mut total_char_count = total_char_count_before;
+
+        self.buffers.modifications_newline_offsets.reserve(text.len() / 20 + 1);
+        self.buffers.modifications_char_checkpoints.reserve(text.len() / CHECKPOINT_INTERVAL as usize + 1);
 
         let mut newline_count = 0;
         let mut char_count = 0;
@@ -1321,6 +1340,7 @@ impl PieceTree {
             }
         }
 
+        self.buffers.modifications_char_count = total_char_count;
         self.buffers.modifications_buffer.push_str(text);
         let text_len = text.len() as u32;
 
