@@ -21,6 +21,7 @@ keywords = [
     "no-std",
     "vendor"
 ]
+repository = "https://github.com/rakivo/e2-piece-tree"
 readme = "README.md"
 
 [features]
