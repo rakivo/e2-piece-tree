@@ -14,11 +14,7 @@ keywords = [
     "piece-tree",
     "piece-table",
     "immutable",
-    "functional",
     "text-buffer",
-    "text-editor",
-    "rope",
-    "no-std",
     "vendor"
 ]
 repository = "https://github.com/rakivo/e2-piece-tree"
