@@ -4,6 +4,8 @@ Purely functional (immutable) implementation of Piece Tree, inspired by [fredbuf
 
 ## Usage
 
+> You can access full documentation at: https://docs.rs/piece-tree/0.1.1/piece_tree.
+
 ### Basic editing
 
 ```rust
