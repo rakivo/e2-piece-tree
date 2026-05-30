@@ -10,7 +10,7 @@ fn insert_char(c: &mut Criterion) {
 
     group.bench_function("random", |bench| {
         let mut rng = fastrand::Rng::new();
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars() as u32;
             tree.insert_char_no_commit(rng.u32(0..len), 'a')
@@ -18,14 +18,14 @@ fn insert_char(c: &mut Criterion) {
     });
 
     group.bench_function("start", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             tree.insert_char_no_commit(0, 'a');
         })
     });
 
     group.bench_function("middle", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_char_no_commit(len / 2, 'a');
@@ -33,7 +33,7 @@ fn insert_char(c: &mut Criterion) {
     });
 
     group.bench_function("end", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_char_no_commit(len, 'a');
@@ -46,7 +46,7 @@ fn insert_small(c: &mut Criterion) {
 
     group.bench_function("random", |bench| {
         let mut rng = fastrand::Rng::new();
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_no_commit(rng.u32(0..len), "a");
@@ -54,14 +54,14 @@ fn insert_small(c: &mut Criterion) {
     });
 
     group.bench_function("start", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             tree.insert_no_commit(0, "a");
         })
     });
 
     group.bench_function("middle", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_no_commit(len / 2, "a");
@@ -69,7 +69,7 @@ fn insert_small(c: &mut Criterion) {
     });
 
     group.bench_function("end", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_no_commit(len, "a");
@@ -82,7 +82,7 @@ fn insert_medium(c: &mut Criterion) {
 
     group.bench_function("random", |bench| {
         let mut rng = fastrand::Rng::new();
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_no_commit(rng.u32(0..len), "This is some text.");
@@ -90,14 +90,14 @@ fn insert_medium(c: &mut Criterion) {
     });
 
     group.bench_function("start", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             tree.insert_no_commit(0, "This is some text.");
         })
     });
 
     group.bench_function("middle", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_no_commit(len / 2, "This is some text.");
@@ -105,7 +105,7 @@ fn insert_medium(c: &mut Criterion) {
     });
 
     group.bench_function("end", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_no_commit(len, "This is some text.");
@@ -120,7 +120,7 @@ fn insert_large(c: &mut Criterion) {
 
     group.bench_function("random", |bench| {
         let mut rng = fastrand::Rng::new();
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_no_commit(rng.u32(0..len), INSERT_TEXT);
@@ -128,14 +128,14 @@ fn insert_large(c: &mut Criterion) {
     });
 
     group.bench_function("start", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             tree.insert_no_commit(0, INSERT_TEXT);
         })
     });
 
     group.bench_function("middle", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_no_commit(len / 2, INSERT_TEXT);
@@ -143,7 +143,7 @@ fn insert_large(c: &mut Criterion) {
     });
 
     group.bench_function("end", |bench| {
-        let mut tree = PieceTree::from_str(TEXT);
+        let mut tree = PieceTree::from(TEXT);
         bench.iter(|| {
             let len = tree.len_chars();
             tree.insert_no_commit(len, INSERT_TEXT);
@@ -156,7 +156,7 @@ fn insert_large(c: &mut Criterion) {
 fn insert_after_clone(c: &mut Criterion) {
     c.bench_function("insert_after_clone", |bench| {
         let mut rng = fastrand::Rng::new();
-        let tree = PieceTree::from_str(TEXT);
+        let tree = PieceTree::from(TEXT);
         let mut tree_clone = tree.clone();
         let mut i = 0;
         bench.iter(|| {

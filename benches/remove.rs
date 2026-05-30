@@ -25,7 +25,7 @@ fn remove_small(c: &mut Criterion) {
     group.bench_function("random", |bench| {
         let mut rng = fastrand::Rng::new();
         let text = mul_string_length(TEXT, LEN_MUL_SMALL);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -34,14 +34,14 @@ fn remove_small(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() < TEXT.len() as u32 / 2 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
 
     group.bench_function("start", |bench| {
         let text = mul_string_length(TEXT, LEN_MUL_SMALL);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -50,14 +50,14 @@ fn remove_small(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() < TEXT.len() as u32 / 2 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
 
     group.bench_function("middle", |bench| {
         let text = mul_string_length(TEXT, LEN_MUL_SMALL);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -66,14 +66,14 @@ fn remove_small(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() < TEXT.len() as u32 / 2 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
 
     group.bench_function("end", |bench| {
         let text = mul_string_length(TEXT, LEN_MUL_SMALL);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -82,7 +82,7 @@ fn remove_small(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() < TEXT.len() as u32 / 2 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
@@ -96,7 +96,7 @@ fn remove_medium(c: &mut Criterion) {
     group.bench_function("random", |bench| {
         let mut rng = fastrand::Rng::new();
         let text = mul_string_length(TEXT, LEN_MUL_MEDIUM);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -105,14 +105,14 @@ fn remove_medium(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() < TEXT.len() as u32 / 2 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
 
     group.bench_function("start", |bench| {
         let text = mul_string_length(TEXT, LEN_MUL_MEDIUM);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -121,14 +121,14 @@ fn remove_medium(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() < TEXT.len() as u32 / 2 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
 
     group.bench_function("middle", |bench| {
         let text = mul_string_length(TEXT, LEN_MUL_MEDIUM);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -137,14 +137,14 @@ fn remove_medium(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() < TEXT.len() as u32 / 2 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
 
     group.bench_function("end", |bench| {
         let text = mul_string_length(TEXT, LEN_MUL_MEDIUM);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -153,7 +153,7 @@ fn remove_medium(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() < TEXT.len() as u32 / 2 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
@@ -167,7 +167,7 @@ fn remove_large(c: &mut Criterion) {
     group.bench_function("random", |bench| {
         let mut rng = fastrand::Rng::new();
         let text = mul_string_length(TEXT, LEN_MUL_LARGE);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -176,14 +176,14 @@ fn remove_large(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() == 0 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
 
     group.bench_function("start", |bench| {
         let text = mul_string_length(TEXT, LEN_MUL_LARGE);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -192,14 +192,14 @@ fn remove_large(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() == 0 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
 
     group.bench_function("middle", |bench| {
         let text = mul_string_length(TEXT, LEN_MUL_LARGE);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -208,14 +208,14 @@ fn remove_large(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() == 0 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
 
     group.bench_function("end", |bench| {
         let text = mul_string_length(TEXT, LEN_MUL_LARGE);
-        let mut tree = PieceTree::from_str(&text);
+        let mut tree = PieceTree::from(&text);
 
         bench.iter(|| {
             let len = tree.len_chars();
@@ -224,7 +224,7 @@ fn remove_large(c: &mut Criterion) {
             tree.remove(start..end);
 
             if tree.len_bytes() == 0 {
-                tree = PieceTree::from_str(&text);
+                tree = PieceTree::from(&text);
             }
         })
     });
@@ -233,7 +233,7 @@ fn remove_large(c: &mut Criterion) {
 fn remove_initial_after_clone(c: &mut Criterion) {
     c.bench_function("remove_initial_after_clone", |bench| {
         let mut rng = fastrand::Rng::new();
-        let tree = PieceTree::from_str(TEXT);
+        let tree = PieceTree::from(TEXT);
         let mut tree_clone = tree.clone();
         let mut i = 0;
         bench.iter(|| {

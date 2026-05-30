@@ -1039,9 +1039,8 @@ impl Default for PieceTree {
 impl core::fmt::Display for PieceTree {
     #[inline(always)]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let walker = TreeWalker::new(self);
-        for char in walker {
-            write!(f, "{char}")?;
+        for chunk in self.slice(..).chunks() {
+            f.write_str(chunk)?;
         }
 
         Ok(())
@@ -1051,7 +1050,7 @@ impl core::fmt::Display for PieceTree {
 impl<T> From<T> for PieceTree where T: AsRef<str> {
     #[inline(always)]
     fn from(value: T) -> Self {
-        Self::from_str(value.as_ref())
+        Self::from_arc_str(value.as_ref())
     }
 }
 
@@ -1073,7 +1072,7 @@ impl PieceTree {
 
     #[inline(always)]
     #[must_use]
-    pub fn from_str(text: impl Into<Arc<str>>) -> Self {
+    pub fn from_arc_str(text: impl Into<Arc<str>>) -> Self {
         let text = text.into();
 
         let mut tree = PieceTree::new();
@@ -1237,7 +1236,7 @@ impl PieceTree {
             }
         }
 
-        Ok(Self::from_str(text))
+        Ok(Self::from(text))
     }
 }
 
@@ -2004,20 +2003,27 @@ impl<'a> Iterator for SliceCharsRev<'a> {
 impl core::fmt::Display for SliceCharsRev<'_> {
     #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Spawn a transient reverse walker starting exactly where we currently are
+        let mut chars = Vec::new();
         let mut temp_walker = ReverseTreeWalker::new_at(self.walker.tree, self.current_byte);
-        let mut temp_byte = self.current_byte;
 
+        let mut temp_byte = self.current_byte;
         while temp_byte > self.start_byte {
-            if let Some(c) = temp_walker.next() {
-                temp_byte = temp_byte.saturating_sub(c.len_utf8() as u32);
-                if temp_byte < self.start_byte { break; }
-                write!(f, "{c}")?;
-            } else {
-                break;
-            }
+            let Some(c) = temp_walker.next() else { break };
+            let new_byte = temp_byte.saturating_sub(c.len_utf8() as u32);
+            if new_byte < self.start_byte { break; }
+            temp_byte = new_byte;
+            chars.push(c);
         }
-        Ok(())
+
+        chars.reverse();
+
+        let mut buf = Vec::with_capacity(chars.iter().map(|c| c.len_utf8()).sum());
+        let mut tmp = [0u8; 4];
+        for c in &chars {
+            buf.extend_from_slice(c.encode_utf8(&mut tmp).as_bytes());
+        }
+
+        f.write_str(unsafe { core::str::from_utf8_unchecked(&buf) })
     }
 }
 
@@ -2044,15 +2050,24 @@ impl core::fmt::Display for SliceChars<'_> {
         let current_offset = self.walker.offset;
 
         // Spawn a transient walker and seek it to the exact current offset
-        let mut temp_walker = TreeWalker::new(self.walker.tree);
+        let mut temp_walker = TreeWalker::<32>::new(self.walker.tree);
         temp_walker.seek(current_offset);
 
         while temp_walker.offset < self.byte_end {
-            if let Some(c) = temp_walker.next() {
-                write!(f, "{c}")?;
-            } else {
-                break;
+            let chunk = temp_walker.current_str.as_str();
+            if chunk.is_empty() {
+                if temp_walker.stack.is_empty() { break; }
+                temp_walker.populate_chars();
+                continue;
             }
+
+            // Clamp chunk to byte_end
+            let remaining = (self.byte_end - temp_walker.offset) as usize;
+            let chunk = &chunk[..remaining.min(chunk.len())];
+            f.write_str(chunk)?;
+            temp_walker.offset += chunk.len() as u32;
+            temp_walker.current_str = "".chars();
+            temp_walker.populate_chars();
         }
 
         Ok(())
@@ -2104,8 +2119,8 @@ impl PartialEq<str> for TreeSlice<'_> {
 impl core::fmt::Display for TreeSlice<'_> {
     #[inline(always)]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        for char in self.chars() {
-            write!(f, "{char}")?;
+        for chunk in self.chunks() {
+            f.write_str(chunk)?;
         }
         Ok(())
     }

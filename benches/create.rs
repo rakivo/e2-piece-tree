@@ -17,25 +17,25 @@ fn from_str(c: &mut Criterion) {
 
     group.bench_function("small", |bench| {
         bench.iter(|| {
-            PieceTree::from_str(black_box(TEXT_SMALL));
+            PieceTree::from(black_box(TEXT_SMALL));
         })
     });
 
     group.bench_function("medium", |bench| {
         bench.iter(|| {
-            PieceTree::from_str(black_box(TEXT_MEDIUM));
+            PieceTree::from(black_box(TEXT_MEDIUM));
         })
     });
 
     group.bench_function("large", |bench| {
         bench.iter(|| {
-            PieceTree::from_str(black_box(TEXT_LARGE));
+            PieceTree::from(black_box(TEXT_LARGE));
         })
     });
 
     group.bench_function("linefeeds", |bench| {
         bench.iter(|| {
-            PieceTree::from_str(black_box(TEXT_LF));
+            PieceTree::from(black_box(TEXT_LF));
         })
     });
 }
