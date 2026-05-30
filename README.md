@@ -4,7 +4,7 @@ Purely functional (immutable) implementation of Piece Tree, inspired by [fredbuf
 
 ## Usage
 
-> You can access full documentation at: https://docs.rs/piece-tree/0.1.2/piece_tree.
+> You can access full documentation at: https://docs.rs/piece-tree.
 
 ### Basic editing
 
